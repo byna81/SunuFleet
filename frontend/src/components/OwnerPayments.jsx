@@ -1,187 +1,235 @@
-// OwnerPayments.jsx - FIX Supabase snake_case + compat camelCase
-import React, { useMemo, useState } from 'react';
-import { DollarSign, CheckCircle, Calendar } from 'lucide-react';
+// OwnerPayments.jsx - Supabase (owner_payments) + calcul automatique des dus
+// ✅ Affiche les paiements dus aux propriétaires à partir des versements chauffeurs (payments)
+// ✅ "Marquer comme payé" => INSERT dans la table owner_payments (schéma fourni)
+// ✅ Compatible snake_case / camelCase (payments, contracts, management_contracts)
+
+import React, { useEffect, useMemo, useState } from 'react';
+import { DollarSign, CheckCircle, Clock, Calendar } from 'lucide-react';
+import { supabase } from '../lib/supabaseClient';
+
+const pad2 = (n) => String(n).padStart(2, '0');
+const monthKeyFrom = (y, m) => `${y}-${pad2(m)}`; // ex: 2026-02
 
 const OwnerPayments = ({
-  payments = [],
-  ownerPayments = [],
+  payments,
+  ownerPayments,
   setOwnerPayments,
   currentUser,
-  managementContracts = [],
-  contracts = [],
+  managementContracts,
+  contracts,
+  vehicles
 }) => {
   const [showPaymentModal, setShowPaymentModal] = useState(null);
   const [paymentMethod, setPaymentMethod] = useState('');
   const [paymentNotes, setPaymentNotes] = useState('');
   const [selectedMonth, setSelectedMonth] = useState(new Date().getMonth() + 1);
   const [selectedYear, setSelectedYear] = useState(new Date().getFullYear());
+  const [isLoading, setIsLoading] = useState(false);
 
   const monthNames = [
     'Janvier', 'Février', 'Mars', 'Avril', 'Mai', 'Juin',
     'Juillet', 'Août', 'Septembre', 'Octobre', 'Novembre', 'Décembre'
   ];
 
-  // Helpers compat snake_case/camelCase
-  const getPaymentDate = (p) => String(p.date ?? p.payment_date ?? '');
-  const getPaymentContractId = (p) => Number(p.contract_id ?? p.contractId ?? 0);
+  const selectedMonthKey = useMemo(
+    () => monthKeyFrom(selectedYear, selectedMonth),
+    [selectedYear, selectedMonth]
+  );
 
-  const getContractVehicleId = (c) => String(c.vehicle_id ?? c.vehicleId ?? '');
-  const getMgmtVehicleId = (m) => String(m.vehicle_id ?? m.vehicleId ?? '');
-  const getMgmtOwnerName = (m) => String(m.owner_name ?? m.ownerName ?? '');
-  const getMgmtOwnerDailyShare = (m) => Number(m.owner_daily_share ?? m.ownerDailyShare ?? 0);
-  const getMgmtCompanyDailyShare = (m) => Number(m.company_daily_share ?? m.companyDailyShare ?? 0);
-  const getMgmtDriverDailyPayment = (m) => Number(m.driver_daily_payment ?? m.driverDailyPayment ?? 0);
-
-  const monthKey = useMemo(() => {
-    return `${selectedYear}-${String(selectedMonth).padStart(2, '0')}`; // "2026-02"
-  }, [selectedYear, selectedMonth]);
-
-  // Index contracts by id
+  // --- maps helpers ---
   const contractById = useMemo(() => {
     const map = new Map();
-    (contracts || []).forEach((c) => {
-      map.set(Number(c.id), c);
-    });
+    (contracts || []).forEach(c => map.set(Number(c.id), c));
     return map;
   }, [contracts]);
 
-  // Index ownerPayments by (vehicleId + month + year) for status paid/unpaid
-  const ownerPaymentByKey = useMemo(() => {
+  const vehicleById = useMemo(() => {
     const map = new Map();
-    (ownerPayments || []).forEach((op) => {
-      const vehicleId = String(op.vehicle_id ?? op.vehicleId ?? '');
-      const month = Number(op.month);
-      const year = Number(op.year);
-      if (!vehicleId || !month || !year) return;
-      map.set(`${vehicleId}|${month}|${year}`, op);
+    (vehicles || []).forEach(v => map.set(String(v.id), v));
+    return map;
+  }, [vehicles]);
+
+  // mgmt contracts: snake_case / camelCase
+  const normalizedMgmtContracts = useMemo(() => {
+    return (managementContracts || []).map(mc => ({
+      id: Number(mc.id),
+      ownerName: mc.owner_name ?? mc.ownerName ?? '',
+      vehicleId: String(mc.vehicle_id ?? mc.vehicleId ?? ''),
+      driverDailyPayment: Number(mc.driver_daily_payment ?? mc.driverDailyPayment ?? 0),
+      ownerDailyShare: Number(mc.owner_daily_share ?? mc.ownerDailyShare ?? 0),
+      companyDailyShare: Number(mc.company_daily_share ?? mc.companyDailyShare ?? 0),
+    }));
+  }, [managementContracts]);
+
+  // --- fetch owner_payments pour la période ---
+  const loadOwnerPaymentsForPeriod = async () => {
+    setIsLoading(true);
+    try {
+      // month est varchar => on stocke un "monthKey" (YYYY-MM)
+      const { data, error } = await supabase
+        .from('owner_payments')
+        .select('*')
+        .eq('month', selectedMonthKey)
+        .order('payment_date', { ascending: false });
+
+      if (error) {
+        console.error('Erreur Supabase (owner_payments):', error);
+        // on garde l'état existant si la requête échoue
+        return;
+      }
+
+      // on remplace seulement les lignes de cette période (évite doublons si on garde un cache global)
+      const others = (ownerPayments || []).filter(op => (op.month ?? '') !== selectedMonthKey);
+      setOwnerPayments([...(data || []), ...others]);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadOwnerPaymentsForPeriod();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedMonthKey]);
+
+  const isPaymentInSelectedMonth = (dateStr) => {
+    if (!dateStr) return false;
+    // date Supabase (date) => "YYYY-MM-DD"
+    // parfois datetime => "YYYY-MM-DDTHH:mm:ss"
+    const s = String(dateStr);
+    return s.startsWith(selectedMonthKey); // "YYYY-MM"
+  };
+
+  const getPaymentVehicleId = (p) => {
+    // 1) via payment.vehicle_id si existe
+    const v = p.vehicle_id ?? p.vehicleId;
+    if (v) return String(v);
+
+    // 2) via contract_id -> contracts.vehicle_id
+    const cid = Number(p.contract_id ?? p.contractId ?? 0);
+    if (!cid) return '';
+    const c = contractById.get(cid);
+    const cv = c?.vehicle_id ?? c?.vehicleId ?? c?.vehicle_id_fk ?? c?.vehicle ?? null;
+    return cv ? String(cv) : '';
+  };
+
+  const getPaymentDate = (p) => p.date ?? p.payment_date ?? p.created_at ?? '';
+
+  const existingOwnerPaymentByOwnerId = useMemo(() => {
+    const map = new Map();
+    (ownerPayments || []).forEach(op => {
+      // owner_id référence management_contracts.id (schéma fourni)
+      const ownerId = Number(op.owner_id ?? op.ownerId ?? op.managementContractId ?? op.management_contract_id ?? 0);
+      const month = op.month ?? '';
+      if (ownerId && month) map.set(`${ownerId}__${month}`, op);
     });
     return map;
   }, [ownerPayments]);
 
-  // Calculer automatiquement les paiements dus pour le mois sélectionné
+  // --- Calcul automatique des paiements dus ---
   const monthlyPayments = useMemo(() => {
-    const calculated = [];
+    const out = [];
 
-    (managementContracts || []).forEach((mgmt) => {
-      const mgmtVehicleId = getMgmtVehicleId(mgmt);
-      if (!mgmtVehicleId) return;
+    normalizedMgmtContracts.forEach(mc => {
+      if (!mc.vehicleId) return;
 
-      // Filtrer les versements du mois pour ce véhicule (via contrat -> vehicle_id)
-      const vehiclePayments = (payments || []).filter((p) => {
-        const pDate = getPaymentDate(p);
-        if (!pDate || !pDate.startsWith(monthKey)) return false;
-
-        const contractId = getPaymentContractId(p);
-        const contract = contractById.get(contractId);
-        if (!contract) return false;
-
-        const vehicleId = getContractVehicleId(contract);
-        return vehicleId === mgmtVehicleId;
+      // versements chauffeurs pour ce véhicule sur la période
+      const vehiclePayments = (payments || []).filter(p => {
+        const vehicleId = getPaymentVehicleId(p);
+        const dateStr = getPaymentDate(p);
+        return vehicleId === mc.vehicleId && isPaymentInSelectedMonth(dateStr);
       });
 
       if (vehiclePayments.length === 0) return;
 
-      const numberOfDays = vehiclePayments.length;
-      const ownerDailyShare = getMgmtOwnerDailyShare(mgmt);
-      const companyDailyShare = getMgmtCompanyDailyShare(mgmt);
-      const driverDailyPayment = getMgmtDriverDailyPayment(mgmt);
+      const numberOfDays = vehiclePayments.length; // 1 versement = 1 jour (hypothèse actuelle)
+      const ownerShare = numberOfDays * mc.ownerDailyShare;
+      const companyShare = numberOfDays * mc.companyDailyShare;
+      const totalCollected = numberOfDays * mc.driverDailyPayment;
 
-      const ownerShare = numberOfDays * ownerDailyShare;
-      const companyShare = numberOfDays * companyDailyShare;
-      const totalCollected = numberOfDays * driverDailyPayment;
+      const existing = existingOwnerPaymentByOwnerId.get(`${mc.id}__${selectedMonthKey}`);
 
-      const key = `${mgmtVehicleId}|${selectedMonth}|${selectedYear}`;
-      const existing = ownerPaymentByKey.get(key);
-
-      calculated.push({
-        id: existing?.id ?? `${mgmt.id}-${selectedMonth}-${selectedYear}`,
-        managementContractId: mgmt.id,
-        vehicleId: mgmtVehicleId,
-        ownerName: getMgmtOwnerName(mgmt),
-        month: selectedMonth,
-        year: selectedYear,
+      out.push({
+        id: existing?.id || `${mc.id}-${selectedMonthKey}`,
+        managementContractId: mc.id,
+        vehicleId: mc.vehicleId,
+        ownerName: mc.ownerName,
+        monthKey: selectedMonthKey,
         numberOfDays,
-        dailyRate: ownerDailyShare,
+        dailyRate: mc.ownerDailyShare,
         ownerShare,
         companyShare,
         totalCollected,
-        status: existing?.status ?? 'unpaid',
-        paidAt: existing?.paid_at ?? existing?.paidAt,
-        paidBy: existing?.paid_by ?? existing?.paidBy,
-        paidByName: existing?.paid_by_name ?? existing?.paidByName,
-        paymentMethod: existing?.payment_method ?? existing?.paymentMethod,
-        paymentNotes: existing?.payment_notes ?? existing?.paymentNotes,
+
+        status: existing ? 'paid' : 'unpaid',
+        paidAt: existing?.payment_date ?? existing?.paidAt ?? null,
+        paidBy: existing?.created_by ?? existing?.paidBy ?? null,
+        paidByName: existing?.created_by_name ?? existing?.paidByName ?? null,
+        paymentMethod: existing?.payment_method ?? existing?.paymentMethod ?? null,
+        paymentNotes: existing?.notes ?? existing?.paymentNotes ?? null,
       });
     });
 
-    return calculated;
-  }, [
-    managementContracts,
-    payments,
-    contractById,
-    ownerPaymentByKey,
-    monthKey,
-    selectedMonth,
-    selectedYear,
-  ]);
+    return out;
+  }, [normalizedMgmtContracts, payments, existingOwnerPaymentByOwnerId, selectedMonthKey]);
 
-  const handleMarkAsPaid = () => {
+  const totalToPay = useMemo(
+    () => monthlyPayments.filter(x => x.status === 'unpaid').reduce((s, x) => s + (x.ownerShare || 0), 0),
+    [monthlyPayments]
+  );
+
+  const totalPaid = useMemo(
+    () => monthlyPayments.filter(x => x.status === 'paid').reduce((s, x) => s + (x.ownerShare || 0), 0),
+    [monthlyPayments]
+  );
+
+  const handleMarkAsPaid = async () => {
+    if (!showPaymentModal) return;
+
     if (!paymentMethod) {
       alert('⚠️ Veuillez sélectionner une méthode de paiement');
       return;
     }
 
-    const target = showPaymentModal;
-    if (!target) return;
+    // INSERT dans owner_payments (schéma fourni)
+    const payload = {
+      owner_id: Number(showPaymentModal.managementContractId),
+      owner_name: String(showPaymentModal.ownerName || ''),
+      amount: Number(showPaymentModal.ownerShare || 0),
+      payment_date: new Date().toISOString().split('T')[0], // date
+      month: selectedMonthKey,
+      notes: paymentNotes || null,
+      created_by: currentUser?.id ?? null,
+      created_by_name: currentUser?.name ?? null,
+    };
 
-    const updated = (ownerPayments || []).map((op) => {
-      const opId = op.id;
-      if (String(opId) === String(target.id)) {
-        return {
-          ...op,
-          status: 'paid',
-          paid_at: new Date().toISOString(),
-          paid_by: currentUser?.id ?? null,
-          paid_by_name: currentUser?.name ?? '',
-          payment_method: paymentMethod,
-          payment_notes: paymentNotes,
-        };
-      }
-      return op;
-    });
+    const { data, error } = await supabase
+      .from('owner_payments')
+      .insert([payload])
+      .select('*')
+      .single();
 
-    const exists = (ownerPayments || []).some((op) => String(op.id) === String(target.id));
-    if (!exists) {
-      updated.push({
-        id: target.id,
-        management_contract_id: target.managementContractId,
-        vehicle_id: target.vehicleId,
-        owner_name: target.ownerName,
-        month: target.month,
-        year: target.year,
-        number_of_days: target.numberOfDays,
-        owner_share: target.ownerShare,
-        company_share: target.companyShare,
-        total_collected: target.totalCollected,
-        status: 'paid',
-        paid_at: new Date().toISOString(),
-        paid_by: currentUser?.id ?? null,
-        paid_by_name: currentUser?.name ?? '',
-        payment_method: paymentMethod,
-        payment_notes: paymentNotes,
-      });
+    if (error) {
+      console.error('Insert owner_payment error:', error);
+      alert('❌ Erreur paiement propriétaire: ' + error.message);
+      return;
     }
 
-    setOwnerPayments(updated);
+    // mettre à jour l'état local
+    const others = (ownerPayments || []).filter(op => Number(op.id) !== Number(data.id));
+    setOwnerPayments([data, ...others]);
 
     alert(
-      `✅ Paiement marqué comme effectué!\n\n` +
-      `Propriétaire: ${target.ownerName}\n` +
-      `Véhicule: ${target.vehicleId}\n` +
-      `Montant: ${Number(target.ownerShare).toLocaleString()} FCFA\n` +
-      `Méthode: ${paymentMethod}\n` +
-      `Par: ${currentUser?.name ?? ''}\n` +
-      `Date: ${new Date().toLocaleDateString('fr-FR')}`
+      `✅ Paiement propriétaire enregistré!
+
+` +
+      `Propriétaire: ${payload.owner_name}
+` +
+      `Véhicule: ${showPaymentModal.vehicleId}
+` +
+      `Montant: ${Number(payload.amount).toLocaleString()} FCFA
+` +
+      `Période: ${selectedMonthKey}
+`
     );
 
     setShowPaymentModal(null);
@@ -204,13 +252,12 @@ const OwnerPayments = ({
               <option key={idx} value={idx + 1}>{month}</option>
             ))}
           </select>
-
           <select
             value={selectedYear}
             onChange={(e) => setSelectedYear(parseInt(e.target.value, 10))}
             className="px-4 py-2 border rounded-lg"
           >
-            {[2024, 2025, 2026, 2027].map((y) => (
+            {[2024, 2025, 2026, 2027].map(y => (
               <option key={y} value={y}>{y}</option>
             ))}
           </select>
@@ -224,12 +271,7 @@ const OwnerPayments = ({
             <DollarSign className="text-green-600" size={32} />
             <h3 className="font-bold text-green-900">Total à payer</h3>
           </div>
-          <p className="text-3xl font-bold text-green-700">
-            {monthlyPayments
-              .filter(mp => mp.status === 'unpaid')
-              .reduce((sum, mp) => sum + Number(mp.ownerShare || 0), 0)
-              .toLocaleString()} FCFA
-          </p>
+          <p className="text-3xl font-bold text-green-700">{Number(totalToPay).toLocaleString()} FCFA</p>
           <p className="text-sm text-green-600 mt-1">
             {monthlyPayments.filter(mp => mp.status === 'unpaid').length} paiement(s) en attente
           </p>
@@ -240,12 +282,7 @@ const OwnerPayments = ({
             <CheckCircle className="text-blue-600" size={32} />
             <h3 className="font-bold text-blue-900">Déjà payé</h3>
           </div>
-          <p className="text-3xl font-bold text-blue-700">
-            {monthlyPayments
-              .filter(mp => mp.status === 'paid')
-              .reduce((sum, mp) => sum + Number(mp.ownerShare || 0), 0)
-              .toLocaleString()} FCFA
-          </p>
+          <p className="text-3xl font-bold text-blue-700">{Number(totalPaid).toLocaleString()} FCFA</p>
           <p className="text-sm text-blue-600 mt-1">
             {monthlyPayments.filter(mp => mp.status === 'paid').length} paiement(s) effectué(s)
           </p>
@@ -256,16 +293,18 @@ const OwnerPayments = ({
             <Calendar className="text-purple-600" size={32} />
             <h3 className="font-bold text-purple-900">Période</h3>
           </div>
-          <p className="text-3xl font-bold text-purple-700">
-            {monthNames[selectedMonth - 1]}
-          </p>
-          <p className="text-sm text-purple-600 mt-1">{selectedYear}</p>
+          <p className="text-3xl font-bold text-purple-700">{monthNames[selectedMonth - 1]}</p>
+          <p className="text-sm text-purple-600 mt-1">{selectedYear} • {selectedMonthKey}</p>
         </div>
       </div>
 
       {/* Liste des paiements */}
       <div className="grid grid-cols-1 gap-6">
-        {monthlyPayments.length > 0 ? (
+        {isLoading ? (
+          <div className="bg-white rounded-xl shadow-lg p-12 text-center">
+            <p className="text-gray-600">Chargement...</p>
+          </div>
+        ) : monthlyPayments.length > 0 ? (
           monthlyPayments.map(mp => (
             <div
               key={mp.id}
@@ -279,9 +318,7 @@ const OwnerPayments = ({
                     {mp.ownerName}
                     <span className="text-sm font-normal text-gray-600">({mp.vehicleId})</span>
                   </h3>
-                  <p className="text-sm text-gray-600">
-                    {monthNames[mp.month - 1]} {mp.year}
-                  </p>
+                  <p className="text-sm text-gray-600">{monthNames[selectedMonth - 1]} {selectedYear}</p>
                 </div>
 
                 <span className={`px-4 py-2 rounded-full font-bold ${
@@ -321,9 +358,9 @@ const OwnerPayments = ({
                 <div className="bg-white p-4 rounded border border-green-300">
                   <p className="text-sm font-bold text-green-800 mb-2">✅ Paiement effectué</p>
                   <div className="grid grid-cols-2 gap-2 text-sm text-gray-700">
-                    <p><strong>Par:</strong> {mp.paidByName}</p>
+                    <p><strong>Par:</strong> {mp.paidByName || '—'}</p>
                     <p><strong>Date:</strong> {mp.paidAt ? new Date(mp.paidAt).toLocaleDateString('fr-FR') : '—'}</p>
-                    <p><strong>Méthode:</strong> {mp.paymentMethod}</p>
+                    <p><strong>Méthode:</strong> {mp.paymentMethod || '—'}</p>
                     {mp.paymentNotes && (
                       <p className="col-span-2"><strong>Notes:</strong> {mp.paymentNotes}</p>
                     )}
@@ -338,8 +375,8 @@ const OwnerPayments = ({
             <p className="text-gray-600">
               Aucun versement enregistré pour {monthNames[selectedMonth - 1]} {selectedYear}
             </p>
-            <p className="text-xs text-gray-400 mt-2">
-              Astuce: un versement doit avoir une date "YYYY-MM-DD" (ex: {monthKey}-15) et un contrat lié à un véhicule sous contrat de gestion.
+            <p className="text-gray-400 text-sm mt-2">
+              Astuce : vérifie qu&apos;il existe un contrat de gestion (Propriétaires) pour le véhicule, et que tes versements ont une date du type {selectedMonthKey}-DD.
             </p>
           </div>
         )}
@@ -353,15 +390,11 @@ const OwnerPayments = ({
 
             <div className="mb-6 p-4 bg-green-50 rounded border border-green-200">
               <p className="font-bold text-lg">{showPaymentModal.ownerName}</p>
-              <p className="text-sm text-gray-600">
-                {showPaymentModal.vehicleId} • {monthNames[showPaymentModal.month - 1]} {showPaymentModal.year}
-              </p>
+              <p className="text-sm text-gray-600">{showPaymentModal.vehicleId} • {monthNames[selectedMonth - 1]} {selectedYear}</p>
               <p className="text-sm text-gray-600 mt-1">
                 {showPaymentModal.numberOfDays} jours × {Number(showPaymentModal.dailyRate).toLocaleString()} FCFA
               </p>
-              <p className="text-3xl font-bold text-green-700 mt-3">
-                {Number(showPaymentModal.ownerShare).toLocaleString()} FCFA
-              </p>
+              <p className="text-3xl font-bold text-green-700 mt-3">{Number(showPaymentModal.ownerShare).toLocaleString()} FCFA</p>
             </div>
 
             <div className="mb-4">
