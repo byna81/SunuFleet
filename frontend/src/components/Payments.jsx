@@ -130,7 +130,6 @@ const Payments = ({ payments, setPayments, currentUser, drivers, contracts }) =>
         return;
       }
 
-      // On conserve l'objet DB (snake_case) ou on normalise côté UI
       setPayments(sortPayments([data, ...(payments || [])]));
 
       alert(
@@ -160,7 +159,6 @@ const Payments = ({ payments, setPayments, currentUser, drivers, contracts }) =>
       return;
     }
 
-    // Retrouver l'ancien paiement dans l'état (snake_case ou camelCase)
     const paymentId = Number(editingPayment.id);
     const oldPayment = (payments || []).find(p => Number(p.id) === paymentId);
 
@@ -194,7 +192,6 @@ const Payments = ({ payments, setPayments, currentUser, drivers, contracts }) =>
         modification.changes.time = { old: oldTime, new: editingPayment.time };
       }
 
-      // Récupérer la liste existante des modifications (si la colonne existe)
       const existingMods = Array.isArray(oldPayment?.modifications) ? oldPayment.modifications : [];
       const nextMods = [...existingMods, modification];
 
@@ -231,7 +228,6 @@ const Payments = ({ payments, setPayments, currentUser, drivers, contracts }) =>
     }
   };
 
-  // --- UI helpers (compat snake/camel) ---
   const getDriverName = (payment) => {
     const driverId = Number(payment.driver_id ?? payment.driverId);
     return (drivers || []).find(d => Number(d.id) === driverId)?.name || '';
@@ -261,7 +257,6 @@ const Payments = ({ payments, setPayments, currentUser, drivers, contracts }) =>
         </button>
       </div>
 
-      {/* Modal Ajout */}
       {showAddPayment && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
           <div className="bg-white rounded-xl p-8 max-w-md w-full">
@@ -364,7 +359,6 @@ const Payments = ({ payments, setPayments, currentUser, drivers, contracts }) =>
         </div>
       )}
 
-      {/* Modal Modification */}
       {editingPayment && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
           <div className="bg-white rounded-xl p-8 max-w-md w-full">
@@ -438,7 +432,6 @@ const Payments = ({ payments, setPayments, currentUser, drivers, contracts }) =>
         </div>
       )}
 
-      {/* Tableau */}
       <div className="bg-white rounded-xl shadow-lg overflow-hidden">
         <table className="w-full">
           <thead className="bg-gray-50">
@@ -475,10 +468,7 @@ const Payments = ({ payments, setPayments, currentUser, drivers, contracts }) =>
                   <td className="px-6 py-4">
                     <div className="flex gap-2">
                       <button
-                        onClick={() => setEditingPayment({
-                          ...payment,
-                          modificationReason: ''
-                        })}
+                        onClick={() => setEditingPayment({ ...payment, modificationReason: '' })}
                         className="text-orange-600 hover:text-orange-800"
                         title="Modifier"
                       >
@@ -500,7 +490,6 @@ const Payments = ({ payments, setPayments, currentUser, drivers, contracts }) =>
         </table>
       </div>
 
-      {/* Modal Historique */}
       {showPaymentHistory && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
           <div className="bg-white rounded-xl p-8 max-w-2xl w-full max-h-[80vh] overflow-y-auto">
