@@ -8,16 +8,16 @@ const Sidebar = ({ currentUser, activeTab, setActiveTab, handleLogout, hasPermis
       {/* Header avec logo */}
       <div className="p-4 border-b border-red-500">
         <div className="flex items-center gap-2 mb-2">
-          <img
-            src="/autofleet-logo.png"
-            alt="AutoFleet Logo"
+          <img 
+            src="/autofleet-logo.png" 
+            alt="AutoFleet Logo" 
             className="w-10 h-10 rounded-lg"
             onError={(e) => {
               e.target.style.display = 'none';
               e.target.nextSibling.style.display = 'block';
             }}
           />
-          <span className="text-4xl" style={{ display: 'none' }}>🚗</span>
+          <span className="text-4xl" style={{display: 'none'}}>🚗</span>
           <h1 className="text-xl font-bold">
             <span className="text-red-200">Auto</span><span className="text-white">Fleet</span>
           </h1>
@@ -38,52 +38,52 @@ const Sidebar = ({ currentUser, activeTab, setActiveTab, handleLogout, hasPermis
 
       {/* Menu navigation */}
       <nav className="flex-1 overflow-y-auto p-3 space-y-1.5">
-        <button
-          onClick={() => setActiveTab('dashboard')}
+        <button 
+          onClick={() => setActiveTab('dashboard')} 
           className={`w-full text-left px-3 py-2.5 rounded font-medium ${activeTab === 'dashboard' ? 'bg-red-800' : 'hover:bg-red-800'}`}
         >
           📊 Tableau de bord
         </button>
 
-        <button
-          onClick={() => setActiveTab('payments')}
+        <button 
+          onClick={() => setActiveTab('payments')} 
           className={`w-full text-left px-3 py-2.5 rounded font-medium ${activeTab === 'payments' ? 'bg-red-800' : 'hover:bg-red-800'}`}
         >
           💰 Versements
         </button>
 
-        <button
-          onClick={() => setActiveTab('drivers')}
+        <button 
+          onClick={() => setActiveTab('drivers')} 
           className={`w-full text-left px-3 py-2.5 rounded font-medium ${activeTab === 'drivers' ? 'bg-red-800' : 'hover:bg-red-800'}`}
         >
           👨‍✈️ Chauffeurs
         </button>
 
-        {/* ✅ NOUVEAU : Contrats (lien chauffeur ↔ véhicule) */}
-        <button
-          onClick={() => setActiveTab('contracts')}
+        {/* ✅ Onglet Contrats : lien Chauffeur ↔ Véhicule */}
+        <button 
+          onClick={() => setActiveTab('contracts')} 
           className={`w-full text-left px-3 py-2.5 rounded font-medium ${activeTab === 'contracts' ? 'bg-red-800' : 'hover:bg-red-800'}`}
         >
           📋 Contrats
         </button>
 
-        <button
-          onClick={() => setActiveTab('vehicles')}
+        <button 
+          onClick={() => setActiveTab('vehicles')} 
           className={`w-full text-left px-3 py-2.5 rounded font-medium ${activeTab === 'vehicles' ? 'bg-red-800' : 'hover:bg-red-800'}`}
         >
           🚗 Véhicules
         </button>
 
-        <button
-          onClick={() => setActiveTab('owners')}
+        <button 
+          onClick={() => setActiveTab('owners')} 
           className={`w-full text-left px-3 py-2.5 rounded font-medium ${activeTab === 'owners' ? 'bg-red-800' : 'hover:bg-red-800'}`}
         >
           🏢 Propriétaires
         </button>
 
         {hasPermission('all') && (
-          <button
-            onClick={() => setActiveTab('users')}
+          <button 
+            onClick={() => setActiveTab('users')} 
             className={`w-full text-left px-3 py-2.5 rounded font-medium border-t border-red-500 mt-3 pt-3 ${activeTab === 'users' ? 'bg-red-800' : 'hover:bg-red-800'}`}
           >
             👤 Utilisateurs
