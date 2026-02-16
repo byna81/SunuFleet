@@ -1,10 +1,48 @@
-// Vehicles-v2.jsx - Gestion véhicules avec CRUD + Validation Admin
-import React, { useState } from 'react';
+// Vehicles.jsx - Gestion véhicules AVEC SUPABASE (CRUD + Validation Admin)
+// ✅ Insert/Update/Delete en base Supabase
+// ✅ Compatible snake_case (DB) + camelCase (UI)
+// ✅ Refresh depuis la DB après chaque action
+import React, { useMemo, useState } from 'react';
 import { Plus, Edit, Trash2, CheckCircle, XCircle, AlertCircle } from 'lucide-react';
+import { supabase } from '../lib/supabaseClient';
+
+const toCamelVehicle = (row) => {
+  if (!row) return row;
+  // Si déjà camelCase, on renvoie tel quel
+  if ('ownershipType' in row || 'ownerName' in row) return row;
+
+  return {
+    id: row.id,
+    brand: row.brand,
+    year: row.year,
+    ownershipType: row.ownership_type,
+    ownerName: row.owner_name,
+    status: row.status,
+    createdBy: row.created_by,
+    createdByName: row.created_by_name,
+    createdAt: row.created_at,
+    validatedBy: row.validated_by,
+    validatedByName: row.validated_by_name,
+    validatedAt: row.validated_at,
+    rejectedBy: row.rejected_by,
+    rejectedByName: row.rejected_by_name,
+    rejectedAt: row.rejected_at,
+    rejectionReason: row.rejection_reason,
+    // optionnel si tu as ces colonnes
+    driverId: row.driver_id,
+    driverName: row.driver_name,
+  };
+};
+
+const getVehicleId = (v) => (v?.vehicleId ?? v?.vehicle_id ?? v?.id ?? null);
+const getContractId = (p) => (p?.contractId ?? p?.contract_id ?? null);
+const getContractVehicleId = (c) => (c?.vehicleId ?? c?.vehicle_id ?? null);
 
 const Vehicles = ({ payments, vehicles, setVehicles, currentUser, hasPermission, managementContracts, contracts, setActiveTab }) => {
   const [showAddVehicle, setShowAddVehicle] = useState(false);
   const [editingVehicle, setEditingVehicle] = useState(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
   const [newVehicle, setNewVehicle] = useState({
     id: '',
     brand: '',
@@ -13,117 +51,201 @@ const Vehicles = ({ payments, vehicles, setVehicles, currentUser, hasPermission,
     ownerName: ''
   });
 
-  const pendingVehicles = vehicles?.filter(v => v.status === 'pending') || [];
-  const validatedVehicles = vehicles?.filter(v => v.status === 'validated' || !v.status) || [];
+  const uiVehicles = useMemo(() => (vehicles || []).map(toCamelVehicle), [vehicles]);
 
-  const handleAddVehicle = (e) => {
+  const pendingVehicles = uiVehicles.filter(v => v.status === 'pending');
+  const validatedVehicles = uiVehicles.filter(v => v.status === 'validated' || !v.status);
+
+  // --- Helpers (fallback si colonnes pas exactement comme prévu) ---
+  const dropUnknownColumnFromError = (payload, err) => {
+    const msg = String(err?.message || '');
+    const m = msg.match(/Could not find the '([^']+)' column/);
+    if (!m) return null;
+    const col = m[1];
+    if (!(col in payload)) return null;
+    const next = { ...payload };
+    delete next[col];
+    return next;
+  };
+
+  const supabaseInsertWithFallback = async (table, payload) => {
+    let p = { ...payload };
+    for (let i = 0; i < 8; i++) {
+      const { data, error } = await supabase.from(table).insert([p]).select('*').single();
+      if (!error) return { data, error: null };
+      const next = dropUnknownColumnFromError(p, error);
+      if (!next) return { data: null, error };
+      p = next;
+    }
+    return { data: null, error: { message: 'Insert failed after retries' } };
+  };
+
+  const supabaseUpdateWithFallback = async (table, id, payload) => {
+    let p = { ...payload };
+    for (let i = 0; i < 8; i++) {
+      const { data, error } = await supabase.from(table).update(p).eq('id', id).select('*').single();
+      if (!error) return { data, error: null };
+      const next = dropUnknownColumnFromError(p, error);
+      if (!next) return { data: null, error };
+      p = next;
+    }
+    return { data: null, error: { message: 'Update failed after retries' } };
+  };
+
+  const refreshVehiclesFromDb = async () => {
+    const { data, error } = await supabase.from('vehicles').select('*').order('id', { ascending: true });
+    if (error) {
+      console.error('Refresh vehicles error:', error);
+      return;
+    }
+    setVehicles(data || []);
+  };
+
+  // --- CRUD ---
+  const handleAddVehicle = async (e) => {
     e.preventDefault();
+    if (isSubmitting) return;
+    setIsSubmitting(true);
 
-    const vehicle = {
-      ...newVehicle,
-      year: parseInt(newVehicle.year),
-      status: hasPermission('all') ? 'validated' : 'pending',
-      createdBy: currentUser.id,
-      createdByName: currentUser.name,
-      createdAt: new Date().toISOString()
+    try {
+      const status = hasPermission('all') ? 'validated' : 'pending';
+
+      // ✅ DB attend généralement du snake_case
+      const payload = {
+        id: (newVehicle.id || '').trim(),
+        brand: (newVehicle.brand || '').trim(),
+        year: Number(newVehicle.year),
+        ownership_type: newVehicle.ownershipType,
+        owner_name: newVehicle.ownershipType === 'Particulier' ? (newVehicle.ownerName || '').trim() : null,
+        status,
+        created_by: currentUser?.id ?? null,
+        created_by_name: currentUser?.name ?? null,
+        created_at: new Date().toISOString()
+      };
+
+      if (hasPermission('all')) {
+        payload.validated_by = currentUser?.id ?? null;
+        payload.validated_by_name = currentUser?.name ?? null;
+        payload.validated_at = new Date().toISOString();
+      }
+
+      const { error } = await supabaseInsertWithFallback('vehicles', payload);
+      if (error) {
+        console.error('Insert vehicle error:', error);
+        alert('❌ Erreur ajout véhicule: ' + error.message);
+        return;
+      }
+
+      await refreshVehiclesFromDb();
+
+      alert(
+        hasPermission('all')
+          ? `✅ Véhicule ajouté et validé!\n${payload.id} - ${payload.brand}`
+          : `✅ Véhicule ajouté!\nEn attente de validation Admin\n${payload.id} - ${payload.brand}`
+      );
+
+      setShowAddVehicle(false);
+      setNewVehicle({
+        id: '',
+        brand: '',
+        year: '',
+        ownershipType: 'Société',
+        ownerName: ''
+      });
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleEditVehicle = async (e) => {
+    e.preventDefault();
+    if (!editingVehicle || isSubmitting) return;
+    setIsSubmitting(true);
+
+    try {
+      const payload = {
+        brand: (editingVehicle.brand || '').trim(),
+        year: Number(editingVehicle.year),
+        ownership_type: editingVehicle.ownershipType,
+        owner_name: editingVehicle.ownershipType === 'Particulier' ? (editingVehicle.ownerName || '').trim() : null,
+        status: hasPermission('all') ? editingVehicle.status : 'pending',
+        modified_by: currentUser?.id ?? null,
+        modified_by_name: currentUser?.name ?? null,
+        modified_at: new Date().toISOString()
+      };
+
+      const { error } = await supabaseUpdateWithFallback('vehicles', editingVehicle.id, payload);
+      if (error) {
+        console.error('Update vehicle error:', error);
+        alert('❌ Erreur modification véhicule: ' + error.message);
+        return;
+      }
+
+      await refreshVehiclesFromDb();
+      alert('✅ Véhicule modifié!');
+      setEditingVehicle(null);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleDeleteVehicle = async (vehicleId) => {
+    if (!window.confirm(`Supprimer le véhicule ${vehicleId} ?`)) return;
+
+    const { error } = await supabase.from('vehicles').delete().eq('id', vehicleId);
+    if (error) {
+      console.error('Delete vehicle error:', error);
+      alert('❌ Erreur suppression véhicule: ' + error.message);
+      return;
+    }
+
+    await refreshVehiclesFromDb();
+    alert('✅ Véhicule supprimé');
+  };
+
+  const handleValidateVehicle = async (vehicleId) => {
+    if (!hasPermission('all')) return;
+
+    const payload = {
+      status: 'validated',
+      validated_by: currentUser?.id ?? null,
+      validated_by_name: currentUser?.name ?? null,
+      validated_at: new Date().toISOString()
     };
 
-    if (hasPermission('all')) {
-      vehicle.validatedBy = currentUser.id;
-      vehicle.validatedByName = currentUser.name;
-      vehicle.validatedAt = new Date().toISOString();
+    const { error } = await supabaseUpdateWithFallback('vehicles', vehicleId, payload);
+    if (error) {
+      console.error('Validate vehicle error:', error);
+      alert('❌ Erreur validation véhicule: ' + error.message);
+      return;
     }
 
-    const updatedVehicles = [...(vehicles || []), vehicle];
-    setVehicles(updatedVehicles);
-
-    alert(
-      hasPermission('all')
-        ? `✅ Véhicule ajouté et validé!\n${newVehicle.id} - ${newVehicle.brand}`
-        : `✅ Véhicule ajouté!\nEn attente de validation Admin\n${newVehicle.id} - ${newVehicle.brand}`
-    );
-
-    setShowAddVehicle(false);
-    setNewVehicle({
-      id: '',
-      brand: '',
-      year: '',
-      ownershipType: 'Société',
-      ownerName: ''
-    });
-  };
-
-  const handleEditVehicle = (e) => {
-    e.preventDefault();
-
-    const updatedVehicles = (vehicles || []).map(v => {
-      if (v.id === editingVehicle.id) {
-        return {
-          ...v,
-          ...editingVehicle,
-          year: parseInt(editingVehicle.year),
-          status: hasPermission('all') ? v.status : 'pending',
-          modifiedBy: currentUser.id,
-          modifiedByName: currentUser.name,
-          modifiedAt: new Date().toISOString()
-        };
-      }
-      return v;
-    });
-
-    setVehicles(updatedVehicles);
-    alert('✅ Véhicule modifié!');
-    setEditingVehicle(null);
-  };
-
-  const handleDeleteVehicle = (vehicleId) => {
-    const vehicle = (vehicles || []).find(v => v.id === vehicleId);
-    if (!vehicle) return;
-
-    if (window.confirm(`Supprimer le véhicule ${vehicleId} ?`)) {
-      const updatedVehicles = (vehicles || []).filter(v => v.id !== vehicleId);
-      setVehicles(updatedVehicles);
-      alert('✅ Véhicule supprimé');
-    }
-  };
-
-  const handleValidateVehicle = (vehicleId) => {
-    const updatedVehicles = (vehicles || []).map(v => {
-      if (v.id === vehicleId) {
-        return {
-          ...v,
-          status: 'validated',
-          validatedBy: currentUser.id,
-          validatedByName: currentUser.name,
-          validatedAt: new Date().toISOString()
-        };
-      }
-      return v;
-    });
-
-    setVehicles(updatedVehicles);
+    await refreshVehiclesFromDb();
     alert('✅ Véhicule validé');
   };
 
-  const handleRejectVehicle = (vehicleId) => {
+  const handleRejectVehicle = async (vehicleId) => {
+    if (!hasPermission('all')) return;
+
     const reason = window.prompt('Motif du rejet:');
     if (!reason) return;
 
-    const updatedVehicles = (vehicles || []).map(v => {
-      if (v.id === vehicleId) {
-        return {
-          ...v,
-          status: 'rejected',
-          rejectedBy: currentUser.id,
-          rejectedByName: currentUser.name,
-          rejectedAt: new Date().toISOString(),
-          rejectionReason: reason
-        };
-      }
-      return v;
-    });
+    const payload = {
+      status: 'rejected',
+      rejected_by: currentUser?.id ?? null,
+      rejected_by_name: currentUser?.name ?? null,
+      rejected_at: new Date().toISOString(),
+      rejection_reason: reason
+    };
 
-    setVehicles(updatedVehicles);
+    const { error } = await supabaseUpdateWithFallback('vehicles', vehicleId, payload);
+    if (error) {
+      console.error('Reject vehicle error:', error);
+      alert('❌ Erreur rejet véhicule: ' + error.message);
+      return;
+    }
+
+    await refreshVehiclesFromDb();
     alert('❌ Véhicule rejeté');
   };
 
@@ -192,7 +314,7 @@ const Vehicles = ({ payments, vehicles, setVehicles, currentUser, hasPermission,
                 <input
                   type="text"
                   value={newVehicle.id}
-                  onChange={(e) => setNewVehicle({...newVehicle, id: e.target.value})}
+                  onChange={(e) => setNewVehicle({ ...newVehicle, id: e.target.value })}
                   className="w-full px-4 py-2 border rounded-lg"
                   placeholder="Ex: DK-123-AB"
                   required
@@ -203,7 +325,7 @@ const Vehicles = ({ payments, vehicles, setVehicles, currentUser, hasPermission,
                 <input
                   type="text"
                   value={newVehicle.brand}
-                  onChange={(e) => setNewVehicle({...newVehicle, brand: e.target.value})}
+                  onChange={(e) => setNewVehicle({ ...newVehicle, brand: e.target.value })}
                   className="w-full px-4 py-2 border rounded-lg"
                   placeholder="Ex: Toyota Corolla"
                   required
@@ -214,7 +336,7 @@ const Vehicles = ({ payments, vehicles, setVehicles, currentUser, hasPermission,
                 <input
                   type="number"
                   value={newVehicle.year}
-                  onChange={(e) => setNewVehicle({...newVehicle, year: e.target.value})}
+                  onChange={(e) => setNewVehicle({ ...newVehicle, year: e.target.value })}
                   className="w-full px-4 py-2 border rounded-lg"
                   min="2000"
                   max="2030"
@@ -225,7 +347,7 @@ const Vehicles = ({ payments, vehicles, setVehicles, currentUser, hasPermission,
                 <label className="block text-sm font-medium mb-2">Type de propriété</label>
                 <select
                   value={newVehicle.ownershipType}
-                  onChange={(e) => setNewVehicle({...newVehicle, ownershipType: e.target.value})}
+                  onChange={(e) => setNewVehicle({ ...newVehicle, ownershipType: e.target.value })}
                   className="w-full px-4 py-2 border rounded-lg"
                 >
                   <option value="Société">Société</option>
@@ -238,15 +360,15 @@ const Vehicles = ({ payments, vehicles, setVehicles, currentUser, hasPermission,
                   <input
                     type="text"
                     value={newVehicle.ownerName}
-                    onChange={(e) => setNewVehicle({...newVehicle, ownerName: e.target.value})}
+                    onChange={(e) => setNewVehicle({ ...newVehicle, ownerName: e.target.value })}
                     className="w-full px-4 py-2 border rounded-lg"
                     required
                   />
                 </div>
               )}
               <div className="flex gap-2">
-                <button type="submit" className="flex-1 bg-green-600 text-white py-2 rounded-lg">
-                  Ajouter
+                <button disabled={isSubmitting} type="submit" className="flex-1 bg-green-600 text-white py-2 rounded-lg disabled:opacity-60">
+                  {isSubmitting ? 'Ajout...' : 'Ajouter'}
                 </button>
                 <button
                   type="button"
@@ -281,7 +403,7 @@ const Vehicles = ({ payments, vehicles, setVehicles, currentUser, hasPermission,
                 <input
                   type="text"
                   value={editingVehicle.brand}
-                  onChange={(e) => setEditingVehicle({...editingVehicle, brand: e.target.value})}
+                  onChange={(e) => setEditingVehicle({ ...editingVehicle, brand: e.target.value })}
                   className="w-full px-4 py-2 border rounded-lg"
                   required
                 />
@@ -291,14 +413,39 @@ const Vehicles = ({ payments, vehicles, setVehicles, currentUser, hasPermission,
                 <input
                   type="number"
                   value={editingVehicle.year}
-                  onChange={(e) => setEditingVehicle({...editingVehicle, year: e.target.value})}
+                  onChange={(e) => setEditingVehicle({ ...editingVehicle, year: e.target.value })}
                   className="w-full px-4 py-2 border rounded-lg"
                   required
                 />
               </div>
+
+              <div className="mb-4">
+                <label className="block text-sm font-medium mb-2">Type de propriété</label>
+                <select
+                  value={editingVehicle.ownershipType}
+                  onChange={(e) => setEditingVehicle({ ...editingVehicle, ownershipType: e.target.value })}
+                  className="w-full px-4 py-2 border rounded-lg"
+                >
+                  <option value="Société">Société</option>
+                  <option value="Particulier">Particulier</option>
+                </select>
+              </div>
+              {editingVehicle.ownershipType === 'Particulier' && (
+                <div className="mb-4">
+                  <label className="block text-sm font-medium mb-2">Nom du propriétaire</label>
+                  <input
+                    type="text"
+                    value={editingVehicle.ownerName || ''}
+                    onChange={(e) => setEditingVehicle({ ...editingVehicle, ownerName: e.target.value })}
+                    className="w-full px-4 py-2 border rounded-lg"
+                    required
+                  />
+                </div>
+              )}
+
               <div className="flex gap-2">
-                <button type="submit" className="flex-1 bg-orange-600 text-white py-2 rounded-lg">
-                  Modifier
+                <button disabled={isSubmitting} type="submit" className="flex-1 bg-orange-600 text-white py-2 rounded-lg disabled:opacity-60">
+                  {isSubmitting ? 'Modification...' : 'Modifier'}
                 </button>
                 <button
                   type="button"
@@ -316,21 +463,27 @@ const Vehicles = ({ payments, vehicles, setVehicles, currentUser, hasPermission,
       {/* Liste des véhicules avec répartition financière */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         {validatedVehicles.map(vehicle => {
-          const mgmtContract = (managementContracts || []).find(mc => mc.vehicleId === vehicle.id);
+          const mgmtContract = (managementContracts || []).find(mc => getVehicleId(mc) === vehicle.id);
+
           const vehiclePayments = (payments || []).filter(p => {
-            const contract = (contracts || []).find(c => c.id === p.contractId);
-            return contract?.vehicleId === vehicle.id && p.date.startsWith('2025-02');
+            const cid = getContractId(p);
+            const contract = (contracts || []).find(c => (c.id === cid));
+            const vId = contract ? getContractVehicleId(contract) : null;
+            const date = p.date || p.payment_date || '';
+            return vId === vehicle.id && String(date).startsWith('2025-02');
           });
 
-          const totalCollected = vehiclePayments.reduce((sum, p) => sum + p.amount, 0);
+          const totalCollected = vehiclePayments.reduce((sum, p) => sum + (Number(p.amount) || Number(p.payment_amount) || 0), 0);
           let companyShare, ownerShare;
 
           if (vehicle.ownershipType === 'Société') {
             companyShare = totalCollected;
             ownerShare = 0;
           } else if (mgmtContract) {
-            ownerShare = vehiclePayments.length * mgmtContract.ownerDailyShare;
-            companyShare = vehiclePayments.length * mgmtContract.companyDailyShare;
+            const ownerDailyShare = mgmtContract.ownerDailyShare ?? mgmtContract.owner_daily_share ?? 0;
+            const companyDailyShare = mgmtContract.companyDailyShare ?? mgmtContract.company_daily_share ?? 0;
+            ownerShare = vehiclePayments.length * Number(ownerDailyShare);
+            companyShare = vehiclePayments.length * Number(companyDailyShare);
           } else {
             ownerShare = 0;
             companyShare = 0;
@@ -355,7 +508,6 @@ const Vehicles = ({ payments, vehicles, setVehicles, currentUser, hasPermission,
                         Propriétaire: {vehicle.ownerName}
                       </p>
                     )}
-                    {/* Afficher le chauffeur avec lien cliquable */}
                     {vehicle.driverName && (
                       <button
                         onClick={() => setActiveTab('drivers')}
@@ -378,12 +530,14 @@ const Vehicles = ({ payments, vehicles, setVehicles, currentUser, hasPermission,
                     <button
                       onClick={() => setEditingVehicle(vehicle)}
                       className="text-orange-600 hover:text-orange-800"
+                      title="Modifier"
                     >
                       <Edit size={18} />
                     </button>
                     <button
                       onClick={() => handleDeleteVehicle(vehicle.id)}
                       className="text-red-600 hover:text-red-800"
+                      title="Supprimer"
                     >
                       <Trash2 size={18} />
                     </button>
@@ -392,7 +546,6 @@ const Vehicles = ({ payments, vehicles, setVehicles, currentUser, hasPermission,
               </div>
 
               <div className="p-4">
-                {/* Bouton Maintenance - NOUVEAU */}
                 <button
                   onClick={() => {
                     localStorage.setItem('selectedVehicleId', vehicle.id);
@@ -430,8 +583,12 @@ const Vehicles = ({ payments, vehicles, setVehicles, currentUser, hasPermission,
                   <div className="mt-4 pt-4 border-t border-gray-200">
                     <p className="text-xs text-gray-600 mb-2">Répartition journalière:</p>
                     <div className="flex justify-between text-xs">
-                      <span className="text-green-700">Propriétaire: {mgmtContract.ownerDailyShare.toLocaleString()} FCFA</span>
-                      <span className="text-blue-700">Société: {mgmtContract.companyDailyShare.toLocaleString()} FCFA</span>
+                      <span className="text-green-700">
+                        Propriétaire: {(Number(mgmtContract.ownerDailyShare ?? mgmtContract.owner_daily_share ?? 0)).toLocaleString()} FCFA
+                      </span>
+                      <span className="text-blue-700">
+                        Société: {(Number(mgmtContract.companyDailyShare ?? mgmtContract.company_daily_share ?? 0)).toLocaleString()} FCFA
+                      </span>
                     </div>
                   </div>
                 )}
