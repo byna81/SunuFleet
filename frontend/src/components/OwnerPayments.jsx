@@ -1,8 +1,4 @@
-// OwnerPayments.jsx - AVEC SUPABASE (compat snake_case/camelCase) + calcul automatique
-// ✅ Affiche les paiements dus aux propriétaires à partir des versements (payments)
-// ✅ Compatible avec colonnes DB en snake_case (vehicle_id, owner_name, driver_daily_payment, ...)
-// ✅ Compatible avec anciens objets UI en camelCase (vehicleId, ownerName, driverDailyPayment, ...)
-
+// OwnerPayments.jsx - FIX Supabase snake_case + compat camelCase
 import React, { useMemo, useState } from 'react';
 import { DollarSign, CheckCircle, Calendar } from 'lucide-react';
 
@@ -13,7 +9,6 @@ const OwnerPayments = ({
   currentUser,
   managementContracts = [],
   contracts = [],
-  vehicles = [],
 }) => {
   const [showPaymentModal, setShowPaymentModal] = useState(null);
   const [paymentMethod, setPaymentMethod] = useState('');
@@ -26,148 +21,108 @@ const OwnerPayments = ({
     'Juillet', 'Août', 'Septembre', 'Octobre', 'Novembre', 'Décembre'
   ];
 
-  // --- helpers ---
-  const toNumber = (v, def = 0) => {
-    const n = typeof v === 'string' ? Number(v.replace(',', '.')) : Number(v);
-    return Number.isFinite(n) ? n : def;
-  };
+  // Helpers compat snake_case/camelCase
+  const getPaymentDate = (p) => String(p.date ?? p.payment_date ?? '');
+  const getPaymentContractId = (p) => Number(p.contract_id ?? p.contractId ?? 0);
 
-  // retourne YYYY-MM (ex: 2026-02) même si date est un timestamp
-  const monthKeyOf = (dateValue) => {
-    if (!dateValue) return '';
-    // Cas string "2026-02-16"
-    if (typeof dateValue === 'string') {
-      // Si timestamp iso: "2026-02-16T20:52:00.000Z"
-      if (dateValue.includes('T')) return dateValue.slice(0, 7);
-      // Si "2026-02-16"
-      if (dateValue.length >= 7) return dateValue.slice(0, 7);
-    }
-    try {
-      const d = new Date(dateValue);
-      if (!isNaN(d.getTime())) return d.toISOString().slice(0, 7);
-    } catch (_) {}
-    return '';
-  };
+  const getContractVehicleId = (c) => String(c.vehicle_id ?? c.vehicleId ?? '');
+  const getMgmtVehicleId = (m) => String(m.vehicle_id ?? m.vehicleId ?? '');
+  const getMgmtOwnerName = (m) => String(m.owner_name ?? m.ownerName ?? '');
+  const getMgmtOwnerDailyShare = (m) => Number(m.owner_daily_share ?? m.ownerDailyShare ?? 0);
+  const getMgmtCompanyDailyShare = (m) => Number(m.company_daily_share ?? m.companyDailyShare ?? 0);
+  const getMgmtDriverDailyPayment = (m) => Number(m.driver_daily_payment ?? m.driverDailyPayment ?? 0);
 
-  const getId = (obj, ...keys) => {
-    for (const k of keys) {
-      if (obj && obj[k] != null) return obj[k];
-    }
-    return null;
-  };
+  const monthKey = useMemo(() => {
+    return `${selectedYear}-${String(selectedMonth).padStart(2, '0')}`; // "2026-02"
+  }, [selectedYear, selectedMonth]);
 
+  // Index contracts by id
   const contractById = useMemo(() => {
     const map = new Map();
-    (contracts || []).forEach(c => {
-      const id = toNumber(c?.id, null);
-      if (id != null) map.set(id, c);
+    (contracts || []).forEach((c) => {
+      map.set(Number(c.id), c);
     });
     return map;
   }, [contracts]);
 
-  const mgmtContractsNormalized = useMemo(() => {
-    return (managementContracts || [])
-      .map(mc => {
-        const vehicleId = getId(mc, 'vehicle_id', 'vehicleId');
-        return {
-          raw: mc,
-          id: getId(mc, 'id'),
-          vehicleId: vehicleId,
-          ownerName: getId(mc, 'owner_name', 'ownerName') || '—',
-          driverDailyPayment: toNumber(getId(mc, 'driver_daily_payment', 'driverDailyPayment')),
-          ownerDailyShare: toNumber(getId(mc, 'owner_daily_share', 'ownerDailyShare')),
-          companyDailyShare: toNumber(getId(mc, 'company_daily_share', 'companyDailyShare')),
-          status: getId(mc, 'status') || 'validated',
-        };
-      })
-      .filter(mc => mc.vehicleId); // véhicule obligatoire
-  }, [managementContracts]);
-
-  // owner_payments peuvent être en base (snake_case) ou en mémoire (camelCase)
-  const ownerPaymentsNormalized = useMemo(() => {
-    return (ownerPayments || []).map(op => ({
-      raw: op,
-      id: getId(op, 'id'),
-      vehicleId: getId(op, 'vehicle_id', 'vehicleId'),
-      month: toNumber(getId(op, 'month')),
-      year: toNumber(getId(op, 'year')),
-      status: getId(op, 'status') || 'unpaid',
-      paidAt: getId(op, 'paid_at', 'paidAt'),
-      paidBy: getId(op, 'paid_by', 'paidBy'),
-      paidByName: getId(op, 'paid_by_name', 'paidByName'),
-      paymentMethod: getId(op, 'payment_method', 'paymentMethod'),
-      paymentNotes: getId(op, 'payment_notes', 'paymentNotes'),
-    }));
+  // Index ownerPayments by (vehicleId + month + year) for status paid/unpaid
+  const ownerPaymentByKey = useMemo(() => {
+    const map = new Map();
+    (ownerPayments || []).forEach((op) => {
+      const vehicleId = String(op.vehicle_id ?? op.vehicleId ?? '');
+      const month = Number(op.month);
+      const year = Number(op.year);
+      if (!vehicleId || !month || !year) return;
+      map.set(`${vehicleId}|${month}|${year}`, op);
+    });
+    return map;
   }, [ownerPayments]);
 
-  // Calculer automatiquement les paiements dus pour un mois donné (à partir des versements)
+  // Calculer automatiquement les paiements dus pour le mois sélectionné
   const monthlyPayments = useMemo(() => {
-    const monthKey = `${selectedYear}-${String(selectedMonth).padStart(2, '0')}`;
-    const res = [];
+    const calculated = [];
 
-    mgmtContractsNormalized.forEach(mc => {
-      // versements du mois pour les contrats liés au même véhicule
-      const relatedPayments = (payments || []).filter(p => {
-        const pMonthKey = monthKeyOf(getId(p, 'date'));
-        if (pMonthKey !== monthKey) return false;
+    (managementContracts || []).forEach((mgmt) => {
+      const mgmtVehicleId = getMgmtVehicleId(mgmt);
+      if (!mgmtVehicleId) return;
 
-        const contractId = toNumber(getId(p, 'contract_id', 'contractId'), null);
-        if (contractId == null) return false;
+      // Filtrer les versements du mois pour ce véhicule (via contrat -> vehicle_id)
+      const vehiclePayments = (payments || []).filter((p) => {
+        const pDate = getPaymentDate(p);
+        if (!pDate || !pDate.startsWith(monthKey)) return false;
 
-        const c = contractById.get(contractId);
-        if (!c) return false;
+        const contractId = getPaymentContractId(p);
+        const contract = contractById.get(contractId);
+        if (!contract) return false;
 
-        const contractVehicleId = getId(c, 'vehicle_id', 'vehicleId');
-        return String(contractVehicleId) === String(mc.vehicleId);
+        const vehicleId = getContractVehicleId(contract);
+        return vehicleId === mgmtVehicleId;
       });
 
-      if (relatedPayments.length === 0) return;
+      if (vehiclePayments.length === 0) return;
 
-      const numberOfDays = relatedPayments.length; // 1 versement = 1 jour
-      const ownerShare = numberOfDays * mc.ownerDailyShare;
-      const companyShare = numberOfDays * mc.companyDailyShare;
-      const totalCollected = numberOfDays * mc.driverDailyPayment;
+      const numberOfDays = vehiclePayments.length;
+      const ownerDailyShare = getMgmtOwnerDailyShare(mgmt);
+      const companyDailyShare = getMgmtCompanyDailyShare(mgmt);
+      const driverDailyPayment = getMgmtDriverDailyPayment(mgmt);
 
-      const existing = ownerPaymentsNormalized.find(
-        op => String(op.vehicleId) === String(mc.vehicleId) &&
-              op.month === selectedMonth &&
-              op.year === selectedYear
-      );
+      const ownerShare = numberOfDays * ownerDailyShare;
+      const companyShare = numberOfDays * companyDailyShare;
+      const totalCollected = numberOfDays * driverDailyPayment;
 
-      // label véhicule (optionnel)
-      const vehicle = (vehicles || []).find(v => String(getId(v, 'id')) === String(mc.vehicleId));
+      const key = `${mgmtVehicleId}|${selectedMonth}|${selectedYear}`;
+      const existing = ownerPaymentByKey.get(key);
 
-      res.push({
-        id: existing?.id || `${mc.id}-${selectedMonth}-${selectedYear}`,
-        managementContractId: mc.id,
-        vehicleId: mc.vehicleId,
-        vehicleLabel: vehicle ? `${getId(vehicle, 'id')} - ${getId(vehicle, 'brand') || ''}` : String(mc.vehicleId),
-        ownerName: mc.ownerName,
+      calculated.push({
+        id: existing?.id ?? `${mgmt.id}-${selectedMonth}-${selectedYear}`,
+        managementContractId: mgmt.id,
+        vehicleId: mgmtVehicleId,
+        ownerName: getMgmtOwnerName(mgmt),
         month: selectedMonth,
         year: selectedYear,
         numberOfDays,
-        dailyRate: mc.ownerDailyShare,
+        dailyRate: ownerDailyShare,
         ownerShare,
         companyShare,
         totalCollected,
-        status: existing?.status || 'unpaid',
-        paidAt: existing?.paidAt,
-        paidBy: existing?.paidBy,
-        paidByName: existing?.paidByName,
-        paymentMethod: existing?.paymentMethod,
-        paymentNotes: existing?.paymentNotes,
+        status: existing?.status ?? 'unpaid',
+        paidAt: existing?.paid_at ?? existing?.paidAt,
+        paidBy: existing?.paid_by ?? existing?.paidBy,
+        paidByName: existing?.paid_by_name ?? existing?.paidByName,
+        paymentMethod: existing?.payment_method ?? existing?.paymentMethod,
+        paymentNotes: existing?.payment_notes ?? existing?.paymentNotes,
       });
     });
 
-    return res;
+    return calculated;
   }, [
+    managementContracts,
     payments,
-    mgmtContractsNormalized,
-    ownerPaymentsNormalized,
     contractById,
+    ownerPaymentByKey,
+    monthKey,
     selectedMonth,
     selectedYear,
-    vehicles
   ]);
 
   const handleMarkAsPaid = () => {
@@ -179,28 +134,43 @@ const OwnerPayments = ({
     const target = showPaymentModal;
     if (!target) return;
 
-    const updated = [...(ownerPayments || [])];
+    const updated = (ownerPayments || []).map((op) => {
+      const opId = op.id;
+      if (String(opId) === String(target.id)) {
+        return {
+          ...op,
+          status: 'paid',
+          paid_at: new Date().toISOString(),
+          paid_by: currentUser?.id ?? null,
+          paid_by_name: currentUser?.name ?? '',
+          payment_method: paymentMethod,
+          payment_notes: paymentNotes,
+        };
+      }
+      return op;
+    });
 
-    // On cherche un paiement existant (en base ou mémoire)
-    const idx = updated.findIndex(op => String(getId(op, 'id')) === String(target.id));
-    const nowIso = new Date().toISOString();
-
-    const newRow = {
-      ...(idx >= 0 ? updated[idx] : {}),
-      id: target.id,
-      vehicle_id: target.vehicleId,
-      month: target.month,
-      year: target.year,
-      status: 'paid',
-      paid_at: nowIso,
-      paid_by: currentUser?.id ?? null,
-      paid_by_name: currentUser?.name ?? '',
-      payment_method: paymentMethod,
-      payment_notes: paymentNotes,
-    };
-
-    if (idx >= 0) updated[idx] = newRow;
-    else updated.push(newRow);
+    const exists = (ownerPayments || []).some((op) => String(op.id) === String(target.id));
+    if (!exists) {
+      updated.push({
+        id: target.id,
+        management_contract_id: target.managementContractId,
+        vehicle_id: target.vehicleId,
+        owner_name: target.ownerName,
+        month: target.month,
+        year: target.year,
+        number_of_days: target.numberOfDays,
+        owner_share: target.ownerShare,
+        company_share: target.companyShare,
+        total_collected: target.totalCollected,
+        status: 'paid',
+        paid_at: new Date().toISOString(),
+        paid_by: currentUser?.id ?? null,
+        paid_by_name: currentUser?.name ?? '',
+        payment_method: paymentMethod,
+        payment_notes: paymentNotes,
+      });
+    }
 
     setOwnerPayments(updated);
 
@@ -208,7 +178,7 @@ const OwnerPayments = ({
       `✅ Paiement marqué comme effectué!\n\n` +
       `Propriétaire: ${target.ownerName}\n` +
       `Véhicule: ${target.vehicleId}\n` +
-      `Montant: ${toNumber(target.ownerShare).toLocaleString()} FCFA\n` +
+      `Montant: ${Number(target.ownerShare).toLocaleString()} FCFA\n` +
       `Méthode: ${paymentMethod}\n` +
       `Par: ${currentUser?.name ?? ''}\n` +
       `Date: ${new Date().toLocaleDateString('fr-FR')}`
@@ -230,8 +200,8 @@ const OwnerPayments = ({
             onChange={(e) => setSelectedMonth(parseInt(e.target.value, 10))}
             className="px-4 py-2 border rounded-lg"
           >
-            {monthNames.map((m, idx) => (
-              <option key={idx} value={idx + 1}>{m}</option>
+            {monthNames.map((month, idx) => (
+              <option key={idx} value={idx + 1}>{month}</option>
             ))}
           </select>
 
@@ -240,7 +210,7 @@ const OwnerPayments = ({
             onChange={(e) => setSelectedYear(parseInt(e.target.value, 10))}
             className="px-4 py-2 border rounded-lg"
           >
-            {[2024, 2025, 2026, 2027].map(y => (
+            {[2024, 2025, 2026, 2027].map((y) => (
               <option key={y} value={y}>{y}</option>
             ))}
           </select>
@@ -257,7 +227,7 @@ const OwnerPayments = ({
           <p className="text-3xl font-bold text-green-700">
             {monthlyPayments
               .filter(mp => mp.status === 'unpaid')
-              .reduce((sum, mp) => sum + toNumber(mp.ownerShare), 0)
+              .reduce((sum, mp) => sum + Number(mp.ownerShare || 0), 0)
               .toLocaleString()} FCFA
           </p>
           <p className="text-sm text-green-600 mt-1">
@@ -273,7 +243,7 @@ const OwnerPayments = ({
           <p className="text-3xl font-bold text-blue-700">
             {monthlyPayments
               .filter(mp => mp.status === 'paid')
-              .reduce((sum, mp) => sum + toNumber(mp.ownerShare), 0)
+              .reduce((sum, mp) => sum + Number(mp.ownerShare || 0), 0)
               .toLocaleString()} FCFA
           </p>
           <p className="text-sm text-blue-600 mt-1">
@@ -300,27 +270,22 @@ const OwnerPayments = ({
             <div
               key={mp.id}
               className={`rounded-xl shadow-lg p-6 border-l-4 ${
-                mp.status === 'paid'
-                  ? 'bg-green-50 border-green-500'
-                  : 'bg-yellow-50 border-yellow-500'
+                mp.status === 'paid' ? 'bg-green-50 border-green-500' : 'bg-yellow-50 border-yellow-500'
               }`}
             >
               <div className="flex justify-between items-start mb-4">
                 <div>
                   <h3 className="font-bold text-xl flex items-center gap-2">
                     {mp.ownerName}
-                    <span className="text-sm font-normal text-gray-600">
-                      ({mp.vehicleLabel || mp.vehicleId})
-                    </span>
+                    <span className="text-sm font-normal text-gray-600">({mp.vehicleId})</span>
                   </h3>
                   <p className="text-sm text-gray-600">
                     {monthNames[mp.month - 1]} {mp.year}
                   </p>
                 </div>
+
                 <span className={`px-4 py-2 rounded-full font-bold ${
-                  mp.status === 'paid'
-                    ? 'bg-green-200 text-green-800'
-                    : 'bg-yellow-200 text-yellow-800'
+                  mp.status === 'paid' ? 'bg-green-200 text-green-800' : 'bg-yellow-200 text-yellow-800'
                 }`}>
                   {mp.status === 'paid' ? '✅ Payé' : '⏳ À payer'}
                 </span>
@@ -333,15 +298,15 @@ const OwnerPayments = ({
                 </div>
                 <div className="bg-white p-3 rounded border">
                   <p className="text-xs text-gray-600">Taux journalier</p>
-                  <p className="text-2xl font-bold">{toNumber(mp.dailyRate).toLocaleString()}</p>
+                  <p className="text-2xl font-bold">{Number(mp.dailyRate).toLocaleString()}</p>
                 </div>
                 <div className="bg-white p-3 rounded border">
                   <p className="text-xs text-gray-600">Total collecté</p>
-                  <p className="text-2xl font-bold">{toNumber(mp.totalCollected).toLocaleString()}</p>
+                  <p className="text-2xl font-bold">{Number(mp.totalCollected).toLocaleString()}</p>
                 </div>
                 <div className="bg-green-100 p-3 rounded border border-green-300">
                   <p className="text-xs text-green-700">Part propriétaire</p>
-                  <p className="text-2xl font-bold text-green-800">{toNumber(mp.ownerShare).toLocaleString()}</p>
+                  <p className="text-2xl font-bold text-green-800">{Number(mp.ownerShare).toLocaleString()}</p>
                 </div>
               </div>
 
@@ -356,12 +321,12 @@ const OwnerPayments = ({
                 <div className="bg-white p-4 rounded border border-green-300">
                   <p className="text-sm font-bold text-green-800 mb-2">✅ Paiement effectué</p>
                   <div className="grid grid-cols-2 gap-2 text-sm text-gray-700">
-                    <p><strong>Par:</strong> {mp.paidByName || '—'}</p>
+                    <p><strong>Par:</strong> {mp.paidByName}</p>
                     <p><strong>Date:</strong> {mp.paidAt ? new Date(mp.paidAt).toLocaleDateString('fr-FR') : '—'}</p>
-                    <p><strong>Méthode:</strong> {mp.paymentMethod || '—'}</p>
-                    {mp.paymentNotes ? (
+                    <p><strong>Méthode:</strong> {mp.paymentMethod}</p>
+                    {mp.paymentNotes && (
                       <p className="col-span-2"><strong>Notes:</strong> {mp.paymentNotes}</p>
-                    ) : null}
+                    )}
                   </div>
                 </div>
               )}
@@ -374,7 +339,7 @@ const OwnerPayments = ({
               Aucun versement enregistré pour {monthNames[selectedMonth - 1]} {selectedYear}
             </p>
             <p className="text-xs text-gray-400 mt-2">
-              Astuce: vérifie que tes versements ont bien une date du type {selectedYear}-{String(selectedMonth).padStart(2,'0')}-DD
+              Astuce: un versement doit avoir une date "YYYY-MM-DD" (ex: {monthKey}-15) et un contrat lié à un véhicule sous contrat de gestion.
             </p>
           </div>
         )}
@@ -389,13 +354,13 @@ const OwnerPayments = ({
             <div className="mb-6 p-4 bg-green-50 rounded border border-green-200">
               <p className="font-bold text-lg">{showPaymentModal.ownerName}</p>
               <p className="text-sm text-gray-600">
-                {showPaymentModal.vehicleLabel || showPaymentModal.vehicleId} • {monthNames[showPaymentModal.month - 1]} {showPaymentModal.year}
+                {showPaymentModal.vehicleId} • {monthNames[showPaymentModal.month - 1]} {showPaymentModal.year}
               </p>
               <p className="text-sm text-gray-600 mt-1">
-                {showPaymentModal.numberOfDays} jours × {toNumber(showPaymentModal.dailyRate).toLocaleString()} FCFA
+                {showPaymentModal.numberOfDays} jours × {Number(showPaymentModal.dailyRate).toLocaleString()} FCFA
               </p>
               <p className="text-3xl font-bold text-green-700 mt-3">
-                {toNumber(showPaymentModal.ownerShare).toLocaleString()} FCFA
+                {Number(showPaymentModal.ownerShare).toLocaleString()} FCFA
               </p>
             </div>
 
