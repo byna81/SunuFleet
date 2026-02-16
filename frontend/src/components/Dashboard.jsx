@@ -1,313 +1,283 @@
-// Dashboard.jsx - Tableau de bord avec suivi des demandes
-import React from 'react';
-import { AlertCircle, CheckCircle, Clock, TrendingUp } from 'lucide-react';
+// Dashboard.jsx - Dashboard complet AutoFleet avec Supabase
+import React, { useMemo } from 'react';
+import {
+  DollarSign,
+  Users,
+  Car,
+  FileText,
+  TrendingUp,
+  Calendar
+} from 'lucide-react';
 
-const Dashboard = ({ 
-  payments, 
-  drivers, 
-  vehicles, 
-  managementContracts, 
-  contracts,
-  maintenanceSchedule,
-  currentUser, 
-  hasPermission,
-  setActiveTab 
+const Dashboard = ({
+  payments = [],
+  ownerPayments = [],
+  drivers = [],
+  vehicles = [],
+  contracts = [],
+  maintenanceSchedule = [],
+  currentUser
 }) => {
-  // Calculer les statistiques de versements
-  const totalPayments = (payments || []).reduce((sum, p) => sum + p.amount, 0);
-  const currentMonth = new Date().toLocaleString('fr-FR', { month: 'long', year: 'numeric' });
 
-  // Filtrer les demandes en attente
-  const pendingDrivers = (drivers || []).filter(d => d.status === 'pending');
-  const pendingVehicles = (vehicles || []).filter(v => v.status === 'pending');
-  const pendingOwners = (managementContracts || []).filter(o => o.status === 'pending');
-  const pendingContracts = (contracts || []).filter(c => c.status === 'pending');
-  const pendingMaintenance = (maintenanceSchedule || []).filter(m => m.status === 'pending-validation');
+  // ============================
+  // Calculs statistiques
+  // ============================
 
-  // Filtrer les demandes du gestionnaire connecté
-  const myPendingDrivers = pendingDrivers.filter(d => d.createdBy === currentUser.id);
-  const myPendingVehicles = pendingVehicles.filter(v => v.createdBy === currentUser.id);
-  const myPendingOwners = pendingOwners.filter(o => o.createdBy === currentUser.id);
-  const myPendingContracts = pendingContracts.filter(c => c.createdBy === currentUser.id);
-  const myPendingMaintenance = pendingMaintenance.filter(m => m.createdBy === currentUser.id);
+  const totalDriverPayments = useMemo(() => {
+    return payments.reduce((sum, p) => sum + Number(p.amount || 0), 0);
+  }, [payments]);
 
-  const totalPending = pendingDrivers.length + pendingVehicles.length + pendingOwners.length + pendingContracts.length + pendingMaintenance.length;
-  const myTotalPending = myPendingDrivers.length + myPendingVehicles.length + myPendingOwners.length + myPendingContracts.length + myPendingMaintenance.length;
+  const totalOwnerPayments = useMemo(() => {
+    return ownerPayments.reduce((sum, p) => sum + Number(p.amount || 0), 0);
+  }, [ownerPayments]);
+
+  const totalVehicles = vehicles.length;
+  const totalDrivers = drivers.length;
+  const totalContracts = contracts.length;
+
+  const activeContracts = contracts.filter(c => c.status === 'active').length;
+
+  // ============================
+  // Versements récents
+  // ============================
+
+  const recentPayments = [...payments]
+    .sort((a, b) => new Date(b.recorded_at || b.date) - new Date(a.recorded_at || a.date))
+    .slice(0, 5);
+
+  // ============================
+  // Graphique simple mensuel
+  // ============================
+
+  const paymentsByMonth = useMemo(() => {
+
+    const map = {};
+
+    payments.forEach(p => {
+
+      const date = new Date(p.date);
+      const key = `${date.getFullYear()}-${date.getMonth() + 1}`;
+
+      map[key] = (map[key] || 0) + Number(p.amount || 0);
+
+    });
+
+    return Object.entries(map).map(([key, value]) => ({
+      month: key,
+      amount: value
+    }));
+
+  }, [payments]);
+
+  // ============================
+  // Maintenances urgentes
+  // ============================
+
+  const urgentMaintenance = maintenanceSchedule.filter(m => {
+
+    const due = new Date(m.due_date || m.dueDate);
+    const today = new Date();
+
+    const diff = (due - today) / (1000 * 60 * 60 * 24);
+
+    return diff <= 7;
+
+  });
+
+  // ============================
+  // UI
+  // ============================
 
   return (
     <div>
-      <h1 className="text-3xl font-bold mb-6">📊 Tableau de bord</h1>
 
-      {/* Statistiques globales */}
+      <h1 className="text-3xl font-bold mb-6">
+        📊 Tableau de bord AutoFleet
+      </h1>
+
+      {/* Cards principales */}
+
       <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
-        <div className="bg-blue-50 border border-blue-200 rounded-xl p-6">
-          <div className="flex items-center gap-3 mb-2">
-            <TrendingUp className="text-blue-600" size={32} />
-            <h3 className="font-bold text-blue-900">Versements</h3>
-          </div>
-          <p className="text-3xl font-bold text-blue-700">{totalPayments.toLocaleString()} FCFA</p>
-          <p className="text-sm text-blue-600 mt-1">{currentMonth}</p>
-        </div>
 
-        <div className="bg-green-50 border border-green-200 rounded-xl p-6">
-          <div className="flex items-center gap-3 mb-2">
-            <CheckCircle className="text-green-600" size={32} />
-            <h3 className="font-bold text-green-900">Chauffeurs</h3>
-          </div>
-          <p className="text-3xl font-bold text-green-700">
-            {(drivers || []).filter(d => d.status === 'active' || !d.status).length}
-          </p>
-          <p className="text-sm text-green-600 mt-1">Actifs</p>
-        </div>
+        <StatCard
+          icon={<DollarSign size={32} />}
+          title="Versements chauffeurs"
+          value={`${totalDriverPayments.toLocaleString()} FCFA`}
+          color="green"
+        />
 
-        <div className="bg-purple-50 border border-purple-200 rounded-xl p-6">
-          <div className="flex items-center gap-3 mb-2">
-            <CheckCircle className="text-purple-600" size={32} />
-            <h3 className="font-bold text-purple-900">Véhicules</h3>
-          </div>
-          <p className="text-3xl font-bold text-purple-700">
-            {(vehicles || []).filter(v => v.status === 'validated' || !v.status).length}
-          </p>
-          <p className="text-sm text-purple-600 mt-1">Validés</p>
-        </div>
+        <StatCard
+          icon={<TrendingUp size={32} />}
+          title="Payé propriétaires"
+          value={`${totalOwnerPayments.toLocaleString()} FCFA`}
+          color="blue"
+        />
 
-        <div className="bg-orange-50 border border-orange-200 rounded-xl p-6">
-          <div className="flex items-center gap-3 mb-2">
-            <CheckCircle className="text-orange-600" size={32} />
-            <h3 className="font-bold text-orange-900">Propriétaires</h3>
-          </div>
-          <p className="text-3xl font-bold text-orange-700">
-            {(managementContracts || []).filter(o => o.status === 'validated' || !o.status).length}
-          </p>
-          <p className="text-sm text-orange-600 mt-1">Contrats actifs</p>
-        </div>
+        <StatCard
+          icon={<Car size={32} />}
+          title="Véhicules"
+          value={totalVehicles}
+          color="purple"
+        />
+
+        <StatCard
+          icon={<Users size={32} />}
+          title="Chauffeurs"
+          value={totalDrivers}
+          color="orange"
+        />
+
       </div>
 
-      {/* Section Admin - Toutes les validations en attente */}
-      {hasPermission('all') && totalPending > 0 && (
-        <div className="mb-8 bg-yellow-50 border-2 border-yellow-300 rounded-xl p-6">
-          <div className="flex items-center gap-3 mb-6">
-            <AlertCircle className="text-yellow-700" size={32} />
-            <div>
-              <h2 className="text-2xl font-bold text-yellow-900">
-                ⚠️ Validations en attente ({totalPending})
-              </h2>
-              <p className="text-sm text-yellow-700">Demandes nécessitant votre approbation</p>
+      {/* Deuxième ligne */}
+
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+
+        <StatCard
+          icon={<FileText size={32} />}
+          title="Contrats"
+          value={totalContracts}
+          color="indigo"
+        />
+
+        <StatCard
+          icon={<FileText size={32} />}
+          title="Contrats actifs"
+          value={activeContracts}
+          color="green"
+        />
+
+        <StatCard
+          icon={<Calendar size={32} />}
+          title="Maintenances urgentes"
+          value={urgentMaintenance.length}
+          color="red"
+        />
+
+      </div>
+
+      {/* Versements récents */}
+
+      <div className="bg-white rounded-xl shadow-lg p-6 mb-8">
+
+        <h2 className="text-xl font-bold mb-4">
+          💰 Versements récents
+        </h2>
+
+        <table className="w-full">
+
+          <thead>
+            <tr className="text-left border-b">
+              <th className="py-2">Chauffeur</th>
+              <th>Date</th>
+              <th>Montant</th>
+            </tr>
+          </thead>
+
+          <tbody>
+
+            {recentPayments.map(p => (
+
+              <tr key={p.id} className="border-b">
+
+                <td className="py-2">
+                  {p.driver_name}
+                </td>
+
+                <td>
+                  {p.date}
+                </td>
+
+                <td className="font-bold text-green-600">
+                  {Number(p.amount).toLocaleString()} FCFA
+                </td>
+
+              </tr>
+
+            ))}
+
+          </tbody>
+
+        </table>
+
+      </div>
+
+      {/* Graphique simple */}
+
+      <div className="bg-white rounded-xl shadow-lg p-6">
+
+        <h2 className="text-xl font-bold mb-4">
+          📈 Versements par mois
+        </h2>
+
+        {paymentsByMonth.map(row => (
+
+          <div key={row.month} className="mb-2">
+
+            <div className="flex justify-between text-sm">
+
+              <span>{row.month}</span>
+
+              <span>{row.amount.toLocaleString()} FCFA</span>
+
             </div>
-          </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {/* Chauffeurs en attente */}
-            {pendingDrivers.length > 0 && (
-              <button
-                onClick={() => setActiveTab('drivers')}
-                className="bg-white p-4 rounded-lg border-2 border-yellow-200 hover:border-yellow-400 text-left"
-              >
-                <div className="flex justify-between items-start mb-2">
-                  <p className="font-bold text-lg">👨‍✈️ Chauffeurs</p>
-                  <span className="bg-yellow-200 text-yellow-900 px-3 py-1 rounded-full text-sm font-bold">
-                    {pendingDrivers.length}
-                  </span>
-                </div>
-                <p className="text-sm text-gray-600">Cliquez pour valider →</p>
-              </button>
-            )}
+            <div className="bg-gray-200 h-3 rounded">
 
-            {/* Véhicules en attente */}
-            {pendingVehicles.length > 0 && (
-              <button
-                onClick={() => setActiveTab('vehicles')}
-                className="bg-white p-4 rounded-lg border-2 border-yellow-200 hover:border-yellow-400 text-left"
-              >
-                <div className="flex justify-between items-start mb-2">
-                  <p className="font-bold text-lg">🚗 Véhicules</p>
-                  <span className="bg-yellow-200 text-yellow-900 px-3 py-1 rounded-full text-sm font-bold">
-                    {pendingVehicles.length}
-                  </span>
-                </div>
-                <p className="text-sm text-gray-600">Cliquez pour valider →</p>
-              </button>
-            )}
+              <div
+                className="bg-green-600 h-3 rounded"
+                style={{
+                  width: `${Math.min(row.amount / 10000, 100)}%`
+                }}
+              />
 
-            {/* Propriétaires en attente */}
-            {pendingOwners.length > 0 && (
-              <button
-                onClick={() => setActiveTab('owners')}
-                className="bg-white p-4 rounded-lg border-2 border-yellow-200 hover:border-yellow-400 text-left"
-              >
-                <div className="flex justify-between items-start mb-2">
-                  <p className="font-bold text-lg">🏢 Propriétaires</p>
-                  <span className="bg-yellow-200 text-yellow-900 px-3 py-1 rounded-full text-sm font-bold">
-                    {pendingOwners.length}
-                  </span>
-                </div>
-                <p className="text-sm text-gray-600">Cliquez pour valider →</p>
-              </button>
-            )}
-
-            {/* Contrats en attente */}
-            {pendingContracts.length > 0 && (
-              <button
-                onClick={() => setActiveTab('drivers')}
-                className="bg-white p-4 rounded-lg border-2 border-yellow-200 hover:border-yellow-400 text-left"
-              >
-                <div className="flex justify-between items-start mb-2">
-                  <p className="font-bold text-lg">📋 Contrats</p>
-                  <span className="bg-yellow-200 text-yellow-900 px-3 py-1 rounded-full text-sm font-bold">
-                    {pendingContracts.length}
-                  </span>
-                </div>
-                <p className="text-sm text-gray-600">Cliquez pour valider →</p>
-              </button>
-            )}
-
-            {/* Maintenance en attente */}
-            {pendingMaintenance.length > 0 && (
-              <button
-                onClick={() => setActiveTab('vehicles')}
-                className="bg-white p-4 rounded-lg border-2 border-yellow-200 hover:border-yellow-400 text-left"
-              >
-                <div className="flex justify-between items-start mb-2">
-                  <p className="font-bold text-lg">🔧 Maintenance</p>
-                  <span className="bg-yellow-200 text-yellow-900 px-3 py-1 rounded-full text-sm font-bold">
-                    {pendingMaintenance.length}
-                  </span>
-                </div>
-                <p className="text-sm text-gray-600">Cliquez pour valider →</p>
-              </button>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* Section Gestionnaire - Mes demandes en attente */}
-      {!hasPermission('all') && myTotalPending > 0 && (
-        <div className="mb-8 bg-blue-50 border-2 border-blue-300 rounded-xl p-6">
-          <div className="flex items-center gap-3 mb-6">
-            <Clock className="text-blue-700" size={32} />
-            <div>
-              <h2 className="text-2xl font-bold text-blue-900">
-                ⏳ Mes demandes en attente ({myTotalPending})
-              </h2>
-              <p className="text-sm text-blue-700">En cours de validation par l'administrateur</p>
             </div>
+
           </div>
 
-          <div className="space-y-3">
-            {/* Mes chauffeurs en attente */}
-            {myPendingDrivers.map(driver => (
-              <div key={driver.id} className="bg-white p-4 rounded-lg border border-blue-200">
-                <div className="flex justify-between items-start">
-                  <div>
-                    <p className="font-bold">👨‍✈️ Chauffeur: {driver.name}</p>
-                    <p className="text-sm text-gray-600">
-                      Créé le {new Date(driver.createdAt).toLocaleDateString('fr-FR')}
-                    </p>
-                  </div>
-                  <span className="px-3 py-1 rounded-full text-xs font-bold bg-blue-200 text-blue-800">
-                    ⏳ En attente
-                  </span>
-                </div>
-              </div>
-            ))}
+        ))}
 
-            {/* Mes véhicules en attente */}
-            {myPendingVehicles.map(vehicle => (
-              <div key={vehicle.id} className="bg-white p-4 rounded-lg border border-blue-200">
-                <div className="flex justify-between items-start">
-                  <div>
-                    <p className="font-bold">🚗 Véhicule: {vehicle.id}</p>
-                    <p className="text-sm text-gray-600">{vehicle.brand}</p>
-                    <p className="text-sm text-gray-600">
-                      Créé le {new Date(vehicle.createdAt).toLocaleDateString('fr-FR')}
-                    </p>
-                  </div>
-                  <span className="px-3 py-1 rounded-full text-xs font-bold bg-blue-200 text-blue-800">
-                    ⏳ En attente
-                  </span>
-                </div>
-              </div>
-            ))}
+      </div>
 
-            {/* Mes propriétaires en attente */}
-            {myPendingOwners.map(owner => (
-              <div key={owner.id} className="bg-white p-4 rounded-lg border border-blue-200">
-                <div className="flex justify-between items-start">
-                  <div>
-                    <p className="font-bold">🏢 Propriétaire: {owner.ownerName}</p>
-                    <p className="text-sm text-gray-600">Véhicule: {owner.vehicleId}</p>
-                    <p className="text-sm text-gray-600">
-                      Créé le {new Date(owner.createdAt).toLocaleDateString('fr-FR')}
-                    </p>
-                  </div>
-                  <span className="px-3 py-1 rounded-full text-xs font-bold bg-blue-200 text-blue-800">
-                    ⏳ En attente
-                  </span>
-                </div>
-              </div>
-            ))}
-
-            {/* Mes contrats en attente */}
-            {myPendingContracts.map(contract => (
-              <div key={contract.id} className="bg-white p-4 rounded-lg border border-blue-200">
-                <div className="flex justify-between items-start">
-                  <div>
-                    <p className="font-bold">📋 Contrat: {contract.driverName}</p>
-                    <p className="text-sm text-gray-600">Type: {contract.type}</p>
-                    <p className="text-sm text-gray-600">
-                      Créé le {new Date(contract.createdAt).toLocaleDateString('fr-FR')}
-                    </p>
-                  </div>
-                  <span className="px-3 py-1 rounded-full text-xs font-bold bg-blue-200 text-blue-800">
-                    ⏳ En attente
-                  </span>
-                </div>
-              </div>
-            ))}
-
-            {/* Mes maintenances en attente */}
-            {myPendingMaintenance.map(maintenance => (
-              <div key={maintenance.id} className="bg-white p-4 rounded-lg border border-blue-200">
-                <div className="flex justify-between items-start">
-                  <div>
-                    <p className="font-bold">🔧 Maintenance: {maintenance.vehicleId}</p>
-                    <p className="text-sm text-gray-600">Type: {maintenance.type}</p>
-                    <p className="text-sm text-gray-600">
-                      Créé le {new Date(maintenance.createdAt).toLocaleDateString('fr-FR')}
-                    </p>
-                  </div>
-                  <span className="px-3 py-1 rounded-full text-xs font-bold bg-blue-200 text-blue-800">
-                    ⏳ En attente
-                  </span>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Message si aucune demande */}
-      {!hasPermission('all') && myTotalPending === 0 && (
-        <div className="bg-green-50 border border-green-200 rounded-xl p-8 text-center">
-          <CheckCircle className="text-green-600 mx-auto mb-4" size={48} />
-          <h3 className="text-xl font-bold text-green-900 mb-2">
-            ✅ Aucune demande en attente
-          </h3>
-          <p className="text-green-700">Toutes vos demandes ont été traitées !</p>
-        </div>
-      )}
-
-      {hasPermission('all') && totalPending === 0 && (
-        <div className="bg-green-50 border border-green-200 rounded-xl p-8 text-center">
-          <CheckCircle className="text-green-600 mx-auto mb-4" size={48} />
-          <h3 className="text-xl font-bold text-green-900 mb-2">
-            ✅ Aucune validation en attente
-          </h3>
-          <p className="text-green-700">Tout est à jour !</p>
-        </div>
-      )}
     </div>
   );
+};
+
+
+// ============================
+// Composant Card
+// ============================
+
+const StatCard = ({ icon, title, value, color }) => {
+
+  const colors = {
+
+    green: "bg-green-50 text-green-700",
+    blue: "bg-blue-50 text-blue-700",
+    purple: "bg-purple-50 text-purple-700",
+    orange: "bg-orange-50 text-orange-700",
+    indigo: "bg-indigo-50 text-indigo-700",
+    red: "bg-red-50 text-red-700"
+
+  };
+
+  return (
+
+    <div className={`${colors[color]} p-6 rounded-xl shadow`}>
+
+      <div className="flex items-center gap-3 mb-2">
+        {icon}
+        <h3 className="font-bold">{title}</h3>
+      </div>
+
+      <p className="text-2xl font-bold">
+        {value}
+      </p>
+
+    </div>
+
+  );
+
 };
 
 export default Dashboard;
