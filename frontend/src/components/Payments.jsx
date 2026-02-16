@@ -1,8 +1,8 @@
 // Payments.jsx - AVEC SUPABASE (CRUD)
 // ✅ Insert + Update en base Supabase
-// ✅ Cherche un contrat "actif" pour le chauffeur (lien chauffeur↔véhicule)
 // ✅ Historique (modifications) stocké en jsonb si la colonne existe
 // ✅ Fallback automatique si la table n'a pas certaines colonnes (évite erreurs "schema cache")
+// ✅ FIX: driver_name (NOT NULL en DB) renseigné à l'insert
 
 import React, { useMemo, useState } from 'react';
 import { Plus, History, Edit } from 'lucide-react';
@@ -65,15 +65,12 @@ const Payments = ({ payments, setPayments, currentUser, drivers, contracts }) =>
     });
   };
 
-  // ✅ Map driver -> contrat ACTIF (status='active' ou null)
+  // map driver -> contrat (snake_case OU camelCase)
   const contractByDriver = useMemo(() => {
     const map = new Map();
     (contracts || []).forEach(c => {
-      const status = c.status ?? null;
-      if (status && status !== 'active' && status !== 'validated') return;
-
-      const did = c.driver_id ?? c.driverId;
-      if (did != null) map.set(Number(did), c);
+      if (c?.driver_id != null) map.set(Number(c.driver_id), c);
+      if (c?.driverId != null) map.set(Number(c.driverId), c);
     });
     return map;
   }, [contracts]);
@@ -84,21 +81,26 @@ const Payments = ({ payments, setPayments, currentUser, drivers, contracts }) =>
 
     const driverId = Number(selectedPaymentDriver);
     const driver = (drivers || []).find(d => Number(d.id) === driverId);
-    const contract = contractByDriver.get(driverId);
 
+    // IMPORTANT: driver_name est NOT NULL en DB -> on bloque si pas de driver
+    if (!driver || !driver.name) {
+      alert('Chauffeur invalide (driver_name manquant).');
+      return;
+    }
+
+    const contract = contractByDriver.get(driverId);
     if (!contract) {
       alert('Aucun contrat actif trouvé');
       return;
     }
 
     const paymentAmount = parseFloat(newPayment.amount);
-    const contractAmount = Number(contract.daily_amount ?? contract.dailyAmount ?? 0);
-
     if (!Number.isFinite(paymentAmount)) {
       alert('Montant invalide');
       return;
     }
 
+    const contractAmount = Number(contract.daily_amount ?? contract.dailyAmount ?? 0);
     if (contractAmount && paymentAmount !== contractAmount) {
       const confirmed = window.confirm(
         `⚠️ ATTENTION!\n\nMontant saisi: ${paymentAmount.toLocaleString()} FCFA\nMontant contrat ${contract.type}: ${contractAmount.toLocaleString()} FCFA\n\nVoulez-vous continuer?`
@@ -108,8 +110,10 @@ const Payments = ({ payments, setPayments, currentUser, drivers, contracts }) =>
 
     setIsSubmitting(true);
     try {
+      // payload snake_case (aligné DB)
       const payload = {
         driver_id: driverId,
+        driver_name: driver.name,           // ✅ FIX NOT NULL
         contract_id: Number(contract.id),
         date: newPayment.date,
         time: newPayment.time,
@@ -127,14 +131,14 @@ const Payments = ({ payments, setPayments, currentUser, drivers, contracts }) =>
       const { data, error } = await supabaseInsertWithFallback('payments', payload);
       if (error) {
         console.error('Insert payment error:', error);
-        alert('❌ Erreur enregistrement versement: ' + error.message);
+        alert('❌ Erreur enregistrement versement: ' + (error.message || JSON.stringify(error)));
         return;
       }
 
       setPayments(sortPayments([data, ...(payments || [])]));
 
       alert(
-        `✅ Paiement enregistré!\n\nChauffeur: ${driver?.name || ''}\nMontant: ${paymentAmount.toLocaleString()} FCFA\nType: ${contract.type}`
+        `✅ Paiement enregistré!\n\nChauffeur: ${driver.name}\nMontant: ${paymentAmount.toLocaleString()} FCFA\nType: ${contract.type}`
       );
 
       setShowAddPayment(false);
@@ -210,20 +214,29 @@ const Payments = ({ payments, setPayments, currentUser, drivers, contracts }) =>
       const { data, error } = await supabaseUpdateWithFallback('payments', paymentId, payload);
       if (error) {
         console.error('Update payment error:', error);
-        alert('❌ Erreur modification versement: ' + error.message);
+        alert('❌ Erreur modification versement: ' + (error.message || JSON.stringify(error)));
         return;
       }
 
       setPayments(sortPayments((payments || []).map(p => (Number(p.id) === Number(data.id) ? data : p))));
+
+      const driverId = Number(data.driver_id ?? data.driverId);
+      const driver = (drivers || []).find(d => Number(d.id) === driverId);
+
+      alert(
+        `✅ Versement modifié!\nChauffeur: ${driver?.name || ''}\nNouveau montant: ${Number(data.amount).toLocaleString()} FCFA`
+      );
+
       setEditingPayment(null);
-      alert('✅ Versement modifié!');
     } finally {
       setIsSubmitting(false);
     }
   };
 
-  // --- UI helpers ---
+  // --- UI helpers (compat snake/camel) ---
   const getDriverName = (payment) => {
+    const dn = payment.driver_name ?? payment.driverName;
+    if (dn) return dn;
     const driverId = Number(payment.driver_id ?? payment.driverId);
     return (drivers || []).find(d => Number(d.id) === driverId)?.name || '';
   };
@@ -252,6 +265,7 @@ const Payments = ({ payments, setPayments, currentUser, drivers, contracts }) =>
         </button>
       </div>
 
+      {/* Modal Ajout */}
       {showAddPayment && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
           <div className="bg-white rounded-xl p-8 max-w-md w-full">
@@ -302,7 +316,6 @@ const Payments = ({ payments, setPayments, currentUser, drivers, contracts }) =>
                   required
                 />
               </div>
-
               <div className="mb-4">
                 <label className="block text-sm font-medium mb-2">Date</label>
                 <input
@@ -313,7 +326,6 @@ const Payments = ({ payments, setPayments, currentUser, drivers, contracts }) =>
                   required
                 />
               </div>
-
               <div className="mb-4">
                 <label className="block text-sm font-medium mb-2">Heure</label>
                 <input
@@ -336,10 +348,18 @@ const Payments = ({ payments, setPayments, currentUser, drivers, contracts }) =>
               </div>
 
               <div className="flex gap-2">
-                <button disabled={isSubmitting} type="submit" className="flex-1 bg-green-600 text-white py-2 rounded-lg disabled:opacity-60">
+                <button
+                  disabled={isSubmitting}
+                  type="submit"
+                  className="flex-1 bg-green-600 text-white py-2 rounded-lg disabled:opacity-60"
+                >
                   {isSubmitting ? 'Enregistrement...' : 'Enregistrer'}
                 </button>
-                <button type="button" onClick={() => setShowAddPayment(false)} className="flex-1 bg-gray-300 py-2 rounded-lg">
+                <button
+                  type="button"
+                  onClick={() => setShowAddPayment(false)}
+                  className="flex-1 bg-gray-300 py-2 rounded-lg"
+                >
                   Annuler
                 </button>
               </div>
@@ -348,54 +368,7 @@ const Payments = ({ payments, setPayments, currentUser, drivers, contracts }) =>
         </div>
       )}
 
-      {/* (Le reste du composant: tableau + historique + modal edit) peut rester identique à ta version actuelle */}
-      <div className="bg-white rounded-xl shadow-lg overflow-hidden">
-        <table className="w-full">
-          <thead className="bg-gray-50">
-            <tr>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Chauffeur</th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Date</th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Type</th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Montant</th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Enregistré par</th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Actions</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-gray-200">
-            {(payments || []).map(payment => {
-              const type = getContractType(payment);
-              const recordedBy = payment.recorded_by ?? payment.recordedBy ?? '';
-              const amount = Number(payment.amount ?? 0);
-
-              return (
-                <tr key={payment.id}>
-                  <td className="px-6 py-4">{getDriverName(payment)}</td>
-                  <td className="px-6 py-4">{payment.date} à {payment.time}</td>
-                  <td className="px-6 py-4">
-                    <span className={`px-3 py-1 rounded-full text-xs font-bold ${type === 'LAO' ? 'bg-blue-100 text-blue-800' : 'bg-green-100 text-green-800'}`}>
-                      {type}
-                    </span>
-                  </td>
-                  <td className="px-6 py-4 font-bold">{amount.toLocaleString()} FCFA</td>
-                  <td className="px-6 py-4 text-sm text-gray-600">{recordedBy}</td>
-                  <td className="px-6 py-4">
-                    <div className="flex gap-2">
-                      <button onClick={() => setEditingPayment({ ...payment, modificationReason: '' })} className="text-orange-600 hover:text-orange-800" title="Modifier">
-                        <Edit size={16} />
-                      </button>
-                      <button onClick={() => setShowPaymentHistory(payment)} className="text-blue-600 hover:text-blue-800" title="Historique">
-                        <History size={16} /> ({getModsCount(payment)})
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
-
-      {/* Tu peux conserver tes modals "editingPayment" et "showPaymentHistory" inchangés (ils fonctionnent déjà avec snake_case/camelCase) */}
+      {/* Modal Modification */}
       {editingPayment && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
           <div className="bg-white rounded-xl p-8 max-w-md w-full">
@@ -449,10 +422,18 @@ const Payments = ({ payments, setPayments, currentUser, drivers, contracts }) =>
               </div>
 
               <div className="flex gap-2">
-                <button disabled={isSubmitting} type="submit" className="flex-1 bg-orange-600 text-white py-2 rounded-lg disabled:opacity-60">
+                <button
+                  disabled={isSubmitting}
+                  type="submit"
+                  className="flex-1 bg-orange-600 text-white py-2 rounded-lg disabled:opacity-60"
+                >
                   {isSubmitting ? 'Validation...' : 'Valider'}
                 </button>
-                <button type="button" onClick={() => setEditingPayment(null)} className="flex-1 bg-gray-300 py-2 rounded-lg">
+                <button
+                  type="button"
+                  onClick={() => setEditingPayment(null)}
+                  className="flex-1 bg-gray-300 py-2 rounded-lg"
+                >
                   Annuler
                 </button>
               </div>
@@ -461,6 +442,69 @@ const Payments = ({ payments, setPayments, currentUser, drivers, contracts }) =>
         </div>
       )}
 
+      {/* Tableau */}
+      <div className="bg-white rounded-xl shadow-lg overflow-hidden">
+        <table className="w-full">
+          <thead className="bg-gray-50">
+            <tr>
+              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Chauffeur</th>
+              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Date</th>
+              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Type</th>
+              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Montant</th>
+              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Enregistré par</th>
+              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Actions</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-gray-200">
+            {(payments || []).map(payment => {
+              const type = getContractType(payment);
+              const recordedBy = payment.recorded_by ?? payment.recordedBy ?? '';
+              const amount = Number(payment.amount ?? 0);
+
+              return (
+                <tr key={payment.id}>
+                  <td className="px-6 py-4">{getDriverName(payment)}</td>
+                  <td className="px-6 py-4">{payment.date} à {payment.time}</td>
+                  <td className="px-6 py-4">
+                    <span
+                      className={`px-3 py-1 rounded-full text-xs font-bold ${
+                        type === 'LAO' ? 'bg-blue-100 text-blue-800' : 'bg-green-100 text-green-800'
+                      }`}
+                    >
+                      {type}
+                    </span>
+                  </td>
+                  <td className="px-6 py-4 font-bold">{amount.toLocaleString()} FCFA</td>
+                  <td className="px-6 py-4 text-sm text-gray-600">{recordedBy}</td>
+                  <td className="px-6 py-4">
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => setEditingPayment({
+                          ...payment,
+                          modificationReason: ''
+                        })}
+                        className="text-orange-600 hover:text-orange-800"
+                        title="Modifier"
+                      >
+                        <Edit size={16} />
+                      </button>
+                      <button
+                        onClick={() => setShowPaymentHistory(payment)}
+                        className="text-blue-600 hover:text-blue-800"
+                        title="Historique"
+                      >
+                        <History size={16} /> ({getModsCount(payment)})
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      {/* Modal Historique */}
       {showPaymentHistory && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
           <div className="bg-white rounded-xl p-8 max-w-2xl w-full max-h-[80vh] overflow-y-auto">
@@ -520,7 +564,10 @@ const Payments = ({ payments, setPayments, currentUser, drivers, contracts }) =>
               <p className="text-gray-500 text-center py-8">Aucune modification</p>
             )}
 
-            <button onClick={() => setShowPaymentHistory(null)} className="mt-6 w-full bg-gray-300 py-2 rounded-lg">
+            <button
+              onClick={() => setShowPaymentHistory(null)}
+              className="mt-6 w-full bg-gray-300 py-2 rounded-lg"
+            >
               Fermer
             </button>
           </div>
