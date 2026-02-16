@@ -1,9 +1,49 @@
-// Maintenance-v2.jsx - Planning maintenance avec Supprimer + Validation Admin
-import React, { useState } from 'react';
-import { Plus, Wrench, AlertTriangle, CheckCircle, Calendar, Trash2, XCircle } from 'lucide-react';
+// Maintenance.jsx - Planning maintenance AVEC SUPABASE (CRUD + Validation Admin)
+// ✅ Insert/Update/Delete en base Supabase
+// ✅ Compatible snake_case (DB) + camelCase (UI)
+// ✅ Refresh depuis la DB après chaque action
+import React, { useMemo, useState } from 'react';
+import { Plus, AlertTriangle, CheckCircle, Calendar, Trash2, XCircle } from 'lucide-react';
+import { supabase } from '../lib/supabaseClient';
+
+// Convertit une ligne DB (snake_case) en objet UI (camelCase)
+const toCamelMaintenance = (row) => {
+  if (!row) return row;
+  if ('vehicleId' in row || 'dueDate' in row) return row;
+
+  return {
+    id: row.id,
+    vehicleId: row.vehicle_id,
+    type: row.type,
+    currentMileage: row.current_mileage,
+    nextMileage: row.next_mileage,
+    dueDate: row.due_date,
+    estimatedCost: row.estimated_cost,
+    notes: row.notes,
+    vehicleName: row.vehicle_name, // optionnel
+
+    status: row.status,
+    createdBy: row.created_by,
+    createdByName: row.created_by_name,
+    createdAt: row.created_at,
+    validatedBy: row.validated_by,
+    validatedByName: row.validated_by_name,
+    validatedAt: row.validated_at,
+    rejectedBy: row.rejected_by,
+    rejectedByName: row.rejected_by_name,
+    rejectedAt: row.rejected_at,
+    rejectionReason: row.rejection_reason,
+
+    completedBy: row.completed_by,
+    completedByName: row.completed_by_name,
+    completedAt: row.completed_at,
+  };
+};
 
 const Maintenance = ({ maintenanceSchedule, setMaintenanceSchedule, vehicles, currentUser, hasPermission }) => {
   const [showAddMaintenance, setShowAddMaintenance] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
   const [newMaintenance, setNewMaintenance] = useState({
     vehicleId: '',
     type: 'Vidange',
@@ -14,120 +54,213 @@ const Maintenance = ({ maintenanceSchedule, setMaintenanceSchedule, vehicles, cu
     notes: ''
   });
 
-  const pendingMaintenance = maintenanceSchedule?.filter(m => m.status === 'pending-validation') || [];
-  const scheduledMaintenance = maintenanceSchedule?.filter(m => m.status === 'pending' || !m.status) || [];
-  const completedMaintenance = maintenanceSchedule?.filter(m => m.status === 'completed') || [];
+  const uiMaintenance = useMemo(() => (maintenanceSchedule || []).map(toCamelMaintenance), [maintenanceSchedule]);
 
-  const handleAddMaintenance = (e) => {
+  const pendingMaintenance = uiMaintenance.filter(m => m.status === 'pending-validation');
+  const scheduledMaintenance = uiMaintenance.filter(m => m.status === 'pending' || !m.status);
+  const completedMaintenance = uiMaintenance.filter(m => m.status === 'completed');
+
+  // --- Helpers fallback colonnes inconnues (évite erreurs "schema cache") ---
+  const dropUnknownColumnFromError = (payload, err) => {
+    const msg = String(err?.message || '');
+    const m = msg.match(/Could not find the '([^']+)' column/);
+    if (!m) return null;
+    const col = m[1];
+    if (!(col in payload)) return null;
+    const next = { ...payload };
+    delete next[col];
+    return next;
+  };
+
+  const supabaseInsertWithFallback = async (table, payload) => {
+    let p = { ...payload };
+    for (let i = 0; i < 10; i++) {
+      const { data, error } = await supabase.from(table).insert([p]).select('*').single();
+      if (!error) return { data, error: null };
+      const next = dropUnknownColumnFromError(p, error);
+      if (!next) return { data: null, error };
+      p = next;
+    }
+    return { data: null, error: { message: 'Insert failed after retries' } };
+  };
+
+  const supabaseUpdateWithFallback = async (table, id, payload) => {
+    let p = { ...payload };
+    for (let i = 0; i < 10; i++) {
+      const { data, error } = await supabase.from(table).update(p).eq('id', id).select('*').single();
+      if (!error) return { data, error: null };
+      const next = dropUnknownColumnFromError(p, error);
+      if (!next) return { data: null, error };
+      p = next;
+    }
+    return { data: null, error: { message: 'Update failed after retries' } };
+  };
+
+  const refreshMaintenanceFromDb = async () => {
+    // Table utilisée dans App.jsx: maintenance_schedule
+    const { data, error } = await supabase
+      .from('maintenance_schedule')
+      .select('*')
+      .order('id', { ascending: true });
+
+    if (error) {
+      console.error('Refresh maintenance error:', error);
+      return;
+    }
+    setMaintenanceSchedule(data || []);
+  };
+
+  // --- CRUD ---
+  const handleAddMaintenance = async (e) => {
     e.preventDefault();
+    if (isSubmitting) return;
+    setIsSubmitting(true);
 
-    const vehicle = vehicles.find(v => v.id === newMaintenance.vehicleId);
-    
-    const maintenance = {
-      id: (maintenanceSchedule?.length || 0) + 1,
-      ...newMaintenance,
-      vehicleName: vehicle.brand,
-      currentMileage: parseInt(newMaintenance.currentMileage),
-      nextMileage: parseInt(newMaintenance.nextMileage),
-      estimatedCost: parseFloat(newMaintenance.estimatedCost),
-      status: hasPermission('all') ? 'pending' : 'pending-validation',
-      createdBy: currentUser.id,
-      createdByName: currentUser.name,
-      createdAt: new Date().toISOString()
+    try {
+      const vehicle = (vehicles || []).find(v => String(v.id) === String(newMaintenance.vehicleId));
+
+      const status = hasPermission('all') ? 'pending' : 'pending-validation';
+
+      const payload = {
+        vehicle_id: newMaintenance.vehicleId,
+        type: newMaintenance.type,
+        current_mileage: parseInt(newMaintenance.currentMileage, 10),
+        next_mileage: parseInt(newMaintenance.nextMileage, 10),
+        due_date: newMaintenance.dueDate, // date
+        estimated_cost: parseFloat(newMaintenance.estimatedCost),
+        notes: (newMaintenance.notes || '').trim() || null,
+        status,
+
+        // optionnel
+        vehicle_name: vehicle?.brand || null,
+
+        created_by: currentUser?.id ?? null,
+        created_by_name: currentUser?.name ?? null,
+        created_at: new Date().toISOString()
+      };
+
+      if (hasPermission('all')) {
+        payload.validated_by = currentUser?.id ?? null;
+        payload.validated_by_name = currentUser?.name ?? null;
+        payload.validated_at = new Date().toISOString();
+      }
+
+      const { error } = await supabaseInsertWithFallback('maintenance_schedule', payload);
+      if (error) {
+        console.error('Insert maintenance error:', error);
+        alert('❌ Erreur création maintenance: ' + error.message);
+        return;
+      }
+
+      await refreshMaintenanceFromDb();
+
+      alert(
+        hasPermission('all')
+          ? `✅ Maintenance planifiée!\n${newMaintenance.vehicleId} - ${newMaintenance.type}`
+          : `✅ Maintenance créée!\nEn attente de validation Admin\n${newMaintenance.vehicleId} - ${newMaintenance.type}`
+      );
+
+      setShowAddMaintenance(false);
+      setNewMaintenance({
+        vehicleId: '',
+        type: 'Vidange',
+        currentMileage: '',
+        nextMileage: '',
+        dueDate: '',
+        estimatedCost: '',
+        notes: ''
+      });
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleMarkAsCompleted = async (maintenanceId) => {
+    if (isSubmitting) return;
+    setIsSubmitting(true);
+
+    try {
+      const payload = {
+        status: 'completed',
+        completed_by: currentUser?.id ?? null,
+        completed_by_name: currentUser?.name ?? null,
+        completed_at: new Date().toISOString()
+      };
+
+      const { error } = await supabaseUpdateWithFallback('maintenance_schedule', maintenanceId, payload);
+      if (error) {
+        console.error('Complete maintenance error:', error);
+        alert('❌ Erreur: ' + error.message);
+        return;
+      }
+
+      await refreshMaintenanceFromDb();
+      alert('✅ Maintenance marquée comme effectuée');
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleDeleteMaintenance = async (maintenanceId) => {
+    const m = uiMaintenance.find(x => x.id === maintenanceId);
+    if (!m) return;
+
+    if (!window.confirm(`Supprimer cette maintenance ?\n${m.vehicleId} - ${m.type}`)) return;
+
+    const { error } = await supabase.from('maintenance_schedule').delete().eq('id', maintenanceId);
+    if (error) {
+      console.error('Delete maintenance error:', error);
+      alert('❌ Erreur suppression maintenance: ' + error.message);
+      return;
+    }
+
+    await refreshMaintenanceFromDb();
+    alert('✅ Maintenance supprimée');
+  };
+
+  const handleValidateMaintenance = async (maintenanceId) => {
+    if (!hasPermission('all')) return;
+
+    const payload = {
+      status: 'pending',
+      validated_by: currentUser?.id ?? null,
+      validated_by_name: currentUser?.name ?? null,
+      validated_at: new Date().toISOString()
     };
 
-    if (hasPermission('all')) {
-      maintenance.validatedBy = currentUser.id;
-      maintenance.validatedByName = currentUser.name;
-      maintenance.validatedAt = new Date().toISOString();
+    const { error } = await supabaseUpdateWithFallback('maintenance_schedule', maintenanceId, payload);
+    if (error) {
+      console.error('Validate maintenance error:', error);
+      alert('❌ Erreur validation: ' + error.message);
+      return;
     }
 
-    setMaintenanceSchedule([...(maintenanceSchedule || []), maintenance]);
-    
-    alert(
-      hasPermission('all')
-        ? `✅ Maintenance planifiée!\n${vehicle.id} - ${newMaintenance.type}`
-        : `✅ Maintenance créée!\nEn attente de validation Admin\n${vehicle.id} - ${newMaintenance.type}`
-    );
-    
-    setShowAddMaintenance(false);
-    setNewMaintenance({
-      vehicleId: '',
-      type: 'Vidange',
-      currentMileage: '',
-      nextMileage: '',
-      dueDate: '',
-      estimatedCost: '',
-      notes: ''
-    });
-  };
-
-  const handleMarkAsCompleted = (maintenanceId) => {
-    const updated = (maintenanceSchedule || []).map(m => {
-      if (m.id === maintenanceId) {
-        return {
-          ...m,
-          status: 'completed',
-          completedBy: currentUser.id,
-          completedByName: currentUser.name,
-          completedAt: new Date().toISOString()
-        };
-      }
-      return m;
-    });
-
-    setMaintenanceSchedule(updated);
-    alert('✅ Maintenance marquée comme effectuée');
-  };
-
-  const handleDeleteMaintenance = (maintenanceId) => {
-    const maintenance = (maintenanceSchedule || []).find(m => m.id === maintenanceId);
-    if (!maintenance) return;
-
-    if (window.confirm(`Supprimer cette maintenance ?\n${maintenance.vehicleId} - ${maintenance.type}`)) {
-      const updated = (maintenanceSchedule || []).filter(m => m.id !== maintenanceId);
-      setMaintenanceSchedule(updated);
-      alert('✅ Maintenance supprimée');
-    }
-  };
-
-  const handleValidateMaintenance = (maintenanceId) => {
-    const updated = (maintenanceSchedule || []).map(m => {
-      if (m.id === maintenanceId) {
-        return {
-          ...m,
-          status: 'pending',
-          validatedBy: currentUser.id,
-          validatedByName: currentUser.name,
-          validatedAt: new Date().toISOString()
-        };
-      }
-      return m;
-    });
-
-    setMaintenanceSchedule(updated);
+    await refreshMaintenanceFromDb();
     alert('✅ Maintenance validée');
   };
 
-  const handleRejectMaintenance = (maintenanceId) => {
+  const handleRejectMaintenance = async (maintenanceId) => {
+    if (!hasPermission('all')) return;
+
     const reason = window.prompt('Motif du rejet:');
     if (!reason) return;
 
-    const updated = (maintenanceSchedule || []).map(m => {
-      if (m.id === maintenanceId) {
-        return {
-          ...m,
-          status: 'rejected',
-          rejectedBy: currentUser.id,
-          rejectedByName: currentUser.name,
-          rejectedAt: new Date().toISOString(),
-          rejectionReason: reason
-        };
-      }
-      return m;
-    });
+    const payload = {
+      status: 'rejected',
+      rejected_by: currentUser?.id ?? null,
+      rejected_by_name: currentUser?.name ?? null,
+      rejected_at: new Date().toISOString(),
+      rejection_reason: reason
+    };
 
-    setMaintenanceSchedule(updated);
+    const { error } = await supabaseUpdateWithFallback('maintenance_schedule', maintenanceId, payload);
+    if (error) {
+      console.error('Reject maintenance error:', error);
+      alert('❌ Erreur rejet: ' + error.message);
+      return;
+    }
+
+    await refreshMaintenanceFromDb();
     alert('❌ Maintenance rejetée');
   };
 
@@ -198,7 +331,9 @@ const Maintenance = ({ maintenanceSchedule, setMaintenanceSchedule, vehicles, cu
                   <div>
                     <p className="font-bold text-lg">{maintenance.vehicleId}</p>
                     <p className="text-sm text-gray-600">Type: {maintenance.type}</p>
-                    <p className="text-sm text-gray-600">Date prévue: {new Date(maintenance.dueDate).toLocaleDateString('fr-FR')}</p>
+                    <p className="text-sm text-gray-600">
+                      Date prévue: {new Date(maintenance.dueDate).toLocaleDateString('fr-FR')}
+                    </p>
                     <p className="text-sm text-gray-500">Créé par: {maintenance.createdByName}</p>
                   </div>
                   <div className="flex gap-2">
@@ -229,7 +364,7 @@ const Maintenance = ({ maintenanceSchedule, setMaintenanceSchedule, vehicles, cu
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
           <div className="bg-white rounded-xl p-8 max-w-md w-full max-h-[90vh] overflow-y-auto">
             <h2 className="text-2xl font-bold mb-6">Planifier une maintenance</h2>
-            
+
             <form onSubmit={handleAddMaintenance}>
               <div className="mb-4">
                 <label className="block text-sm font-medium mb-2">Véhicule</label>
@@ -237,9 +372,9 @@ const Maintenance = ({ maintenanceSchedule, setMaintenanceSchedule, vehicles, cu
                   value={newMaintenance.vehicleId}
                   onChange={(e) => {
                     const vehicleId = e.target.value;
-                    const vehicle = vehicles.find(v => v.id === vehicleId);
+                    const vehicle = (vehicles || []).find(v => String(v.id) === String(vehicleId));
                     setNewMaintenance({
-                      ...newMaintenance, 
+                      ...newMaintenance,
                       vehicleId,
                       currentMileage: vehicle?.mileage || ''
                     });
@@ -248,7 +383,7 @@ const Maintenance = ({ maintenanceSchedule, setMaintenanceSchedule, vehicles, cu
                   required
                 >
                   <option value="">Sélectionner</option>
-                  {vehicles.map(v => (
+                  {(vehicles || []).map(v => (
                     <option key={v.id} value={v.id}>
                       {v.id} - {v.brand}
                     </option>
@@ -260,17 +395,13 @@ const Maintenance = ({ maintenanceSchedule, setMaintenanceSchedule, vehicles, cu
                 <label className="block text-sm font-medium mb-2">Type de maintenance</label>
                 <select
                   value={newMaintenance.type}
-                  onChange={(e) => setNewMaintenance({...newMaintenance, type: e.target.value})}
+                  onChange={(e) => setNewMaintenance({ ...newMaintenance, type: e.target.value })}
                   className="w-full px-4 py-2 border rounded-lg"
                   required
                 >
-                  <option value="Vidange">Vidange</option>
-                  <option value="Révision">Révision</option>
-                  <option value="Freins">Freins</option>
-                  <option value="Pneus">Pneus</option>
-                  <option value="Climatisation">Climatisation</option>
-                  <option value="Batterie">Batterie</option>
-                  <option value="Autre">Autre</option>
+                  {['Vidange','Révision','Freins','Pneus','Climatisation','Batterie','Autre'].map(t => (
+                    <option key={t} value={t}>{t}</option>
+                  ))}
                 </select>
               </div>
 
@@ -280,7 +411,7 @@ const Maintenance = ({ maintenanceSchedule, setMaintenanceSchedule, vehicles, cu
                   <input
                     type="number"
                     value={newMaintenance.currentMileage}
-                    onChange={(e) => setNewMaintenance({...newMaintenance, currentMileage: e.target.value})}
+                    onChange={(e) => setNewMaintenance({ ...newMaintenance, currentMileage: e.target.value })}
                     className="w-full px-4 py-2 border rounded-lg"
                     required
                   />
@@ -290,7 +421,7 @@ const Maintenance = ({ maintenanceSchedule, setMaintenanceSchedule, vehicles, cu
                   <input
                     type="number"
                     value={newMaintenance.nextMileage}
-                    onChange={(e) => setNewMaintenance({...newMaintenance, nextMileage: e.target.value})}
+                    onChange={(e) => setNewMaintenance({ ...newMaintenance, nextMileage: e.target.value })}
                     className="w-full px-4 py-2 border rounded-lg"
                     required
                   />
@@ -302,7 +433,7 @@ const Maintenance = ({ maintenanceSchedule, setMaintenanceSchedule, vehicles, cu
                 <input
                   type="date"
                   value={newMaintenance.dueDate}
-                  onChange={(e) => setNewMaintenance({...newMaintenance, dueDate: e.target.value})}
+                  onChange={(e) => setNewMaintenance({ ...newMaintenance, dueDate: e.target.value })}
                   className="w-full px-4 py-2 border rounded-lg"
                   required
                 />
@@ -313,7 +444,7 @@ const Maintenance = ({ maintenanceSchedule, setMaintenanceSchedule, vehicles, cu
                 <input
                   type="number"
                   value={newMaintenance.estimatedCost}
-                  onChange={(e) => setNewMaintenance({...newMaintenance, estimatedCost: e.target.value})}
+                  onChange={(e) => setNewMaintenance({ ...newMaintenance, estimatedCost: e.target.value })}
                   className="w-full px-4 py-2 border rounded-lg"
                   required
                 />
@@ -323,7 +454,7 @@ const Maintenance = ({ maintenanceSchedule, setMaintenanceSchedule, vehicles, cu
                 <label className="block text-sm font-medium mb-2">Notes</label>
                 <textarea
                   value={newMaintenance.notes}
-                  onChange={(e) => setNewMaintenance({...newMaintenance, notes: e.target.value})}
+                  onChange={(e) => setNewMaintenance({ ...newMaintenance, notes: e.target.value })}
                   className="w-full px-4 py-2 border rounded-lg"
                   rows="3"
                   placeholder="Détails sur la maintenance..."
@@ -332,10 +463,11 @@ const Maintenance = ({ maintenanceSchedule, setMaintenanceSchedule, vehicles, cu
 
               <div className="flex gap-2">
                 <button
+                  disabled={isSubmitting}
                   type="submit"
-                  className="flex-1 bg-green-600 text-white py-2 rounded-lg hover:bg-green-700"
+                  className="flex-1 bg-green-600 text-white py-2 rounded-lg hover:bg-green-700 disabled:opacity-60"
                 >
-                  Planifier
+                  {isSubmitting ? 'Planification...' : 'Planifier'}
                 </button>
                 <button
                   type="button"
@@ -367,21 +499,23 @@ const Maintenance = ({ maintenanceSchedule, setMaintenanceSchedule, vehicles, cu
                       <p className="font-bold text-lg">{maintenance.vehicleId}</p>
                       <p className="text-sm text-gray-600">{maintenance.type}</p>
                       <p className="text-sm text-red-600 font-bold mt-1">
-                        {daysUntil <= 0 
-                          ? `⚠️ En retard de ${Math.abs(daysUntil)} jour(s)` 
+                        {daysUntil <= 0
+                          ? `⚠️ En retard de ${Math.abs(daysUntil)} jour(s)`
                           : `⏰ Dans ${daysUntil} jour(s)`}
                       </p>
                     </div>
                     <div className="flex gap-2">
                       <button
+                        disabled={isSubmitting}
                         onClick={() => handleMarkAsCompleted(maintenance.id)}
-                        className="bg-green-600 text-white px-4 py-2 rounded hover:bg-green-700"
+                        className="bg-green-600 text-white px-4 py-2 rounded hover:bg-green-700 disabled:opacity-60"
                       >
                         Effectuée
                       </button>
                       <button
                         onClick={() => handleDeleteMaintenance(maintenance.id)}
                         className="text-red-600 hover:text-red-800"
+                        title="Supprimer"
                       >
                         <Trash2 size={20} />
                       </button>
@@ -403,7 +537,7 @@ const Maintenance = ({ maintenanceSchedule, setMaintenanceSchedule, vehicles, cu
           const isOverdue = daysUntil < 0;
 
           return (
-            <div 
+            <div
               key={maintenance.id}
               className={`bg-white rounded-xl shadow-lg border-l-4 ${
                 isOverdue ? 'border-red-500' : isUrgent ? 'border-yellow-500' : 'border-blue-500'
@@ -415,19 +549,16 @@ const Maintenance = ({ maintenanceSchedule, setMaintenanceSchedule, vehicles, cu
                 <div className="flex justify-between items-start">
                   <div>
                     <h3 className="font-bold text-xl">{maintenance.vehicleId}</h3>
-                    <p className="text-sm text-gray-600">{maintenance.vehicleName}</p>
+                    <p className="text-sm text-gray-600">{maintenance.vehicleName || ''}</p>
                   </div>
                   <div className="flex gap-2 items-start">
-                    <span className={`px-3 py-1 rounded-full text-xs font-bold ${
-                      maintenance.type === 'Vidange' ? 'bg-blue-200 text-blue-800' :
-                      maintenance.type === 'Révision' ? 'bg-purple-200 text-purple-800' :
-                      'bg-gray-200 text-gray-800'
-                    }`}>
+                    <span className="px-3 py-1 rounded-full text-xs font-bold bg-gray-200 text-gray-800">
                       {maintenance.type}
                     </span>
                     <button
                       onClick={() => handleDeleteMaintenance(maintenance.id)}
                       className="text-red-600 hover:text-red-800"
+                      title="Supprimer"
                     >
                       <Trash2 size={18} />
                     </button>
@@ -439,11 +570,11 @@ const Maintenance = ({ maintenanceSchedule, setMaintenanceSchedule, vehicles, cu
                 <div className="grid grid-cols-2 gap-4 mb-4">
                   <div className="p-3 bg-gray-50 rounded">
                     <p className="text-xs text-gray-600">Kilométrage actuel</p>
-                    <p className="font-bold">{maintenance.currentMileage.toLocaleString()} km</p>
+                    <p className="font-bold">{Number(maintenance.currentMileage || 0).toLocaleString()} km</p>
                   </div>
                   <div className="p-3 bg-gray-50 rounded">
                     <p className="text-xs text-gray-600">Prochain entretien</p>
-                    <p className="font-bold">{maintenance.nextMileage.toLocaleString()} km</p>
+                    <p className="font-bold">{Number(maintenance.nextMileage || 0).toLocaleString()} km</p>
                   </div>
                 </div>
 
@@ -454,16 +585,14 @@ const Maintenance = ({ maintenanceSchedule, setMaintenanceSchedule, vehicles, cu
                     <p className={`text-xs mt-1 ${
                       isOverdue ? 'text-red-600' : isUrgent ? 'text-yellow-700' : 'text-green-700'
                     }`}>
-                      {isOverdue 
-                        ? `En retard de ${Math.abs(daysUntil)} jour(s)` 
-                        : isUrgent 
-                        ? `Dans ${daysUntil} jour(s)`
+                      {isOverdue
+                        ? `En retard de ${Math.abs(daysUntil)} jour(s)`
                         : `Dans ${daysUntil} jour(s)`}
                     </p>
                   </div>
                   <div className="p-3 bg-yellow-50 rounded">
                     <p className="text-xs text-yellow-700">Coût estimé</p>
-                    <p className="font-bold text-lg">{maintenance.estimatedCost.toLocaleString()} FCFA</p>
+                    <p className="font-bold text-lg">{Number(maintenance.estimatedCost || 0).toLocaleString()} FCFA</p>
                   </div>
                 </div>
 
@@ -475,8 +604,9 @@ const Maintenance = ({ maintenanceSchedule, setMaintenanceSchedule, vehicles, cu
                 )}
 
                 <button
+                  disabled={isSubmitting}
                   onClick={() => handleMarkAsCompleted(maintenance.id)}
-                  className="w-full bg-green-600 text-white py-2 rounded-lg hover:bg-green-700 flex items-center justify-center gap-2"
+                  className="w-full bg-green-600 text-white py-2 rounded-lg hover:bg-green-700 flex items-center justify-center gap-2 disabled:opacity-60"
                 >
                   <CheckCircle size={20} />
                   Marquer comme effectuée
