@@ -1,10 +1,59 @@
-// Drivers-v2.jsx - Gestion chauffeurs avec CRUD + Validation Admin
-import React, { useState } from 'react';
+// Drivers.jsx - Gestion chauffeurs AVEC SUPABASE (CRUD + Validation Admin)
+// ✅ Insert/Update/Delete en base Supabase
+// ✅ Compatible snake_case (DB) + camelCase (UI)
+// ✅ Refresh depuis la DB après chaque action
+import React, { useMemo, useState } from 'react';
 import { Edit, Phone, Mail, Calendar, AlertCircle, Plus, Trash2, CheckCircle, XCircle } from 'lucide-react';
+import { supabase } from '../lib/supabaseClient';
+
+const toCamelDriver = (row) => {
+  if (!row) return row;
+  // Si déjà camelCase, on renvoie tel quel
+  if ('licenseNumber' in row || 'licenseExpiry' in row) return row;
+
+  return {
+    id: row.id,
+    name: row.name,
+    phone: row.phone,
+    email: row.email,
+    address: row.address,
+    licenseNumber: row.license_number,
+    licenseExpiry: row.license_expiry,
+    cin: row.cin,
+    restDay: row.rest_day,
+    photo: row.photo,
+
+    status: row.status,
+    createdBy: row.created_by,
+    createdByName: row.created_by_name,
+    createdAt: row.created_at,
+    validatedBy: row.validated_by,
+    validatedByName: row.validated_by_name,
+    validatedAt: row.validated_at,
+    rejectedBy: row.rejected_by,
+    rejectedByName: row.rejected_by_name,
+    rejectedAt: row.rejected_at,
+    rejectionReason: row.rejection_reason,
+
+    modifiedBy: row.modified_by,
+    modifiedByName: row.modified_by_name,
+    modifiedAt: row.modified_at,
+
+    // optionnel si tu as un lien véhicule côté drivers
+    vehicleId: row.vehicle_id,
+    vehicle_id: row.vehicle_id,
+  };
+};
+
+const getContractDriverId = (c) => (c?.driverId ?? c?.driver_id ?? null);
+const getContractVehicleId = (c) => (c?.vehicleId ?? c?.vehicle_id ?? null);
+const getContractDailyAmount = (c) => (c?.dailyAmount ?? c?.daily_amount ?? 0);
 
 const Drivers = ({ drivers, setDrivers, contracts, vehicles, currentUser, hasPermission }) => {
   const [editingDriver, setEditingDriver] = useState(null);
   const [showAddDriver, setShowAddDriver] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
   const [newDriver, setNewDriver] = useState({
     name: '',
     phone: '',
@@ -17,127 +66,218 @@ const Drivers = ({ drivers, setDrivers, contracts, vehicles, currentUser, hasPer
     photo: '👨🏿'
   });
 
-  const pendingDrivers = drivers?.filter(d => d.status === 'pending') || [];
-  const validatedDrivers = drivers?.filter(d => d.status === 'active' || !d.status) || [];
+  const uiDrivers = useMemo(() => (drivers || []).map(toCamelDriver), [drivers]);
 
-  const handleAddDriver = (e) => {
-    e.preventDefault();
+  const pendingDrivers = uiDrivers.filter(d => d.status === 'pending');
+  const validatedDrivers = uiDrivers.filter(d => d.status === 'active' || !d.status);
 
-    const driver = {
-      id: (drivers?.length || 0) + 1,
-      ...newDriver,
-      status: hasPermission('all') ? 'active' : 'pending',
-      createdBy: currentUser.id,
-      createdByName: currentUser.name,
-      createdAt: new Date().toISOString()
-    };
+  // --- Helpers (fallback si colonnes pas exactement comme prévu) ---
+  const dropUnknownColumnFromError = (payload, err) => {
+    const msg = String(err?.message || '');
+    const m = msg.match(/Could not find the '([^']+)' column/);
+    if (!m) return null;
+    const col = m[1];
+    if (!(col in payload)) return null;
+    const next = { ...payload };
+    delete next[col];
+    return next;
+  };
 
-    if (hasPermission('all')) {
-      driver.validatedBy = currentUser.id;
-      driver.validatedByName = currentUser.name;
-      driver.validatedAt = new Date().toISOString();
+  const supabaseInsertWithFallback = async (table, payload) => {
+    let p = { ...payload };
+    for (let i = 0; i < 10; i++) {
+      const { data, error } = await supabase.from(table).insert([p]).select('*').single();
+      if (!error) return { data, error: null };
+      const next = dropUnknownColumnFromError(p, error);
+      if (!next) return { data: null, error };
+      p = next;
     }
-
-    setDrivers([...(drivers || []), driver]);
-
-    alert(
-      hasPermission('all')
-        ? `✅ Chauffeur ajouté et validé!\n${newDriver.name}`
-        : `✅ Chauffeur ajouté!\nEn attente de validation Admin\n${newDriver.name}`
-    );
-
-    setShowAddDriver(false);
-    setNewDriver({
-      name: '',
-      phone: '',
-      email: '',
-      address: '',
-      licenseNumber: '',
-      licenseExpiry: '',
-      cin: '',
-      restDay: 'Lundi',
-      photo: '👨🏿'
-    });
+    return { data: null, error: { message: 'Insert failed after retries' } };
   };
 
-  const handleUpdateRestDay = (e) => {
+  const supabaseUpdateWithFallback = async (table, id, payload) => {
+    let p = { ...payload };
+    for (let i = 0; i < 10; i++) {
+      const { data, error } = await supabase.from(table).update(p).eq('id', id).select('*').single();
+      if (!error) return { data, error: null };
+      const next = dropUnknownColumnFromError(p, error);
+      if (!next) return { data: null, error };
+      p = next;
+    }
+    return { data: null, error: { message: 'Update failed after retries' } };
+  };
+
+  const refreshDriversFromDb = async () => {
+    const { data, error } = await supabase.from('drivers').select('*').order('id', { ascending: true });
+    if (error) {
+      console.error('Refresh drivers error:', error);
+      return;
+    }
+    setDrivers(data || []);
+  };
+
+  // --- CRUD ---
+  const handleAddDriver = async (e) => {
     e.preventDefault();
-    
-    const updatedDrivers = (drivers || []).map(d => {
-      if (d.id === editingDriver.id) {
-        return { 
-          ...d, 
-          restDay: editingDriver.restDay,
-          modifiedBy: currentUser.id,
-          modifiedByName: currentUser.name,
-          modifiedAt: new Date().toISOString()
-        };
-      }
-      return d;
-    });
+    if (isSubmitting) return;
+    setIsSubmitting(true);
 
-    setDrivers(updatedDrivers);
-    alert(`✅ Jour de repos mis à jour!\n${editingDriver.name} : ${editingDriver.restDay}`);
-    setEditingDriver(null);
+    try {
+      const status = hasPermission('all') ? 'active' : 'pending';
+
+      const payload = {
+        name: (newDriver.name || '').trim(),
+        phone: (newDriver.phone || '').trim(),
+        email: (newDriver.email || '').trim(),
+        address: (newDriver.address || '').trim(),
+        license_number: (newDriver.licenseNumber || '').trim(),
+        license_expiry: newDriver.licenseExpiry, // date
+        cin: (newDriver.cin || '').trim(),
+        rest_day: newDriver.restDay,
+        photo: newDriver.photo || '👨🏿',
+        status,
+        created_by: currentUser?.id ?? null,
+        created_by_name: currentUser?.name ?? null,
+        created_at: new Date().toISOString()
+      };
+
+      if (hasPermission('all')) {
+        payload.validated_by = currentUser?.id ?? null;
+        payload.validated_by_name = currentUser?.name ?? null;
+        payload.validated_at = new Date().toISOString();
+      }
+
+      const { error } = await supabaseInsertWithFallback('drivers', payload);
+      if (error) {
+        console.error('Insert driver error:', error);
+        alert('❌ Erreur ajout chauffeur: ' + error.message);
+        return;
+      }
+
+      await refreshDriversFromDb();
+
+      alert(
+        hasPermission('all')
+          ? `✅ Chauffeur ajouté et validé!\n${payload.name}`
+          : `✅ Chauffeur ajouté!\nEn attente de validation Admin\n${payload.name}`
+      );
+
+      setShowAddDriver(false);
+      setNewDriver({
+        name: '',
+        phone: '',
+        email: '',
+        address: '',
+        licenseNumber: '',
+        licenseExpiry: '',
+        cin: '',
+        restDay: 'Lundi',
+        photo: '👨🏿'
+      });
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
-  const handleDeleteDriver = (driverId) => {
-    const driver = (drivers || []).find(d => d.id === driverId);
+  const handleUpdateRestDay = async (e) => {
+    e.preventDefault();
+    if (!editingDriver || isSubmitting) return;
+    setIsSubmitting(true);
+
+    try {
+      const payload = {
+        rest_day: editingDriver.restDay,
+        modified_by: currentUser?.id ?? null,
+        modified_by_name: currentUser?.name ?? null,
+        modified_at: new Date().toISOString()
+      };
+
+      const { error } = await supabaseUpdateWithFallback('drivers', editingDriver.id, payload);
+      if (error) {
+        console.error('Update rest day error:', error);
+        alert('❌ Erreur mise à jour jour de repos: ' + error.message);
+        return;
+      }
+
+      await refreshDriversFromDb();
+      alert(`✅ Jour de repos mis à jour!\n${editingDriver.name} : ${editingDriver.restDay}`);
+      setEditingDriver(null);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleDeleteDriver = async (driverId) => {
+    const driver = uiDrivers.find(d => d.id === driverId);
     if (!driver) return;
 
-    if (window.confirm(`Supprimer le chauffeur ${driver.name} ?`)) {
-      const updatedDrivers = (drivers || []).filter(d => d.id !== driverId);
-      setDrivers(updatedDrivers);
-      alert('✅ Chauffeur supprimé');
+    if (!window.confirm(`Supprimer le chauffeur ${driver.name} ?`)) return;
+
+    const { error } = await supabase.from('drivers').delete().eq('id', driverId);
+    if (error) {
+      console.error('Delete driver error:', error);
+      alert('❌ Erreur suppression chauffeur: ' + error.message);
+      return;
     }
+
+    await refreshDriversFromDb();
+    alert('✅ Chauffeur supprimé');
   };
 
-  const handleValidateDriver = (driverId) => {
-    const updatedDrivers = (drivers || []).map(d => {
-      if (d.id === driverId) {
-        return {
-          ...d,
-          status: 'active',
-          validatedBy: currentUser.id,
-          validatedByName: currentUser.name,
-          validatedAt: new Date().toISOString()
-        };
-      }
-      return d;
-    });
+  const handleValidateDriver = async (driverId) => {
+    if (!hasPermission('all')) return;
 
-    setDrivers(updatedDrivers);
+    const payload = {
+      status: 'active',
+      validated_by: currentUser?.id ?? null,
+      validated_by_name: currentUser?.name ?? null,
+      validated_at: new Date().toISOString()
+    };
+
+    const { error } = await supabaseUpdateWithFallback('drivers', driverId, payload);
+    if (error) {
+      console.error('Validate driver error:', error);
+      alert('❌ Erreur validation chauffeur: ' + error.message);
+      return;
+    }
+
+    await refreshDriversFromDb();
     alert('✅ Chauffeur validé');
   };
 
-  const handleRejectDriver = (driverId) => {
+  const handleRejectDriver = async (driverId) => {
+    if (!hasPermission('all')) return;
+
     const reason = window.prompt('Motif du rejet:');
     if (!reason) return;
 
-    const updatedDrivers = (drivers || []).map(d => {
-      if (d.id === driverId) {
-        return {
-          ...d,
-          status: 'rejected',
-          rejectedBy: currentUser.id,
-          rejectedByName: currentUser.name,
-          rejectedAt: new Date().toISOString(),
-          rejectionReason: reason
-        };
-      }
-      return d;
-    });
+    const payload = {
+      status: 'rejected',
+      rejected_by: currentUser?.id ?? null,
+      rejected_by_name: currentUser?.name ?? null,
+      rejected_at: new Date().toISOString(),
+      rejection_reason: reason
+    };
 
-    setDrivers(updatedDrivers);
+    const { error } = await supabaseUpdateWithFallback('drivers', driverId, payload);
+    if (error) {
+      console.error('Reject driver error:', error);
+      alert('❌ Erreur rejet chauffeur: ' + error.message);
+      return;
+    }
+
+    await refreshDriversFromDb();
     alert('❌ Chauffeur rejeté');
   };
 
   const getDriverContract = (driverId) => {
-    return contracts.find(c => c.driverId === driverId);
+    const list = contracts || [];
+    return list.find(c => String(getContractDriverId(c)) === String(driverId));
   };
 
   const getDriverVehicle = (vehicleId) => {
-    return vehicles.find(v => v.id === vehicleId);
+    const list = vehicles || [];
+    return list.find(v => String(v.id) === String(vehicleId));
   };
 
   return (
@@ -207,7 +347,7 @@ const Drivers = ({ drivers, setDrivers, contracts, vehicles, currentUser, hasPer
                 <input
                   type="text"
                   value={newDriver.name}
-                  onChange={(e) => setNewDriver({...newDriver, name: e.target.value})}
+                  onChange={(e) => setNewDriver({ ...newDriver, name: e.target.value })}
                   className="w-full px-4 py-2 border rounded-lg"
                   required
                 />
@@ -217,7 +357,7 @@ const Drivers = ({ drivers, setDrivers, contracts, vehicles, currentUser, hasPer
                 <input
                   type="tel"
                   value={newDriver.phone}
-                  onChange={(e) => setNewDriver({...newDriver, phone: e.target.value})}
+                  onChange={(e) => setNewDriver({ ...newDriver, phone: e.target.value })}
                   className="w-full px-4 py-2 border rounded-lg"
                   placeholder="+221 XX XXX XXXX"
                   required
@@ -228,7 +368,7 @@ const Drivers = ({ drivers, setDrivers, contracts, vehicles, currentUser, hasPer
                 <input
                   type="email"
                   value={newDriver.email}
-                  onChange={(e) => setNewDriver({...newDriver, email: e.target.value})}
+                  onChange={(e) => setNewDriver({ ...newDriver, email: e.target.value })}
                   className="w-full px-4 py-2 border rounded-lg"
                   required
                 />
@@ -238,7 +378,7 @@ const Drivers = ({ drivers, setDrivers, contracts, vehicles, currentUser, hasPer
                 <input
                   type="text"
                   value={newDriver.address}
-                  onChange={(e) => setNewDriver({...newDriver, address: e.target.value})}
+                  onChange={(e) => setNewDriver({ ...newDriver, address: e.target.value })}
                   className="w-full px-4 py-2 border rounded-lg"
                   required
                 />
@@ -248,7 +388,7 @@ const Drivers = ({ drivers, setDrivers, contracts, vehicles, currentUser, hasPer
                 <input
                   type="text"
                   value={newDriver.licenseNumber}
-                  onChange={(e) => setNewDriver({...newDriver, licenseNumber: e.target.value})}
+                  onChange={(e) => setNewDriver({ ...newDriver, licenseNumber: e.target.value })}
                   className="w-full px-4 py-2 border rounded-lg"
                   required
                 />
@@ -258,7 +398,7 @@ const Drivers = ({ drivers, setDrivers, contracts, vehicles, currentUser, hasPer
                 <input
                   type="date"
                   value={newDriver.licenseExpiry}
-                  onChange={(e) => setNewDriver({...newDriver, licenseExpiry: e.target.value})}
+                  onChange={(e) => setNewDriver({ ...newDriver, licenseExpiry: e.target.value })}
                   className="w-full px-4 py-2 border rounded-lg"
                   required
                 />
@@ -268,7 +408,7 @@ const Drivers = ({ drivers, setDrivers, contracts, vehicles, currentUser, hasPer
                 <input
                   type="text"
                   value={newDriver.cin}
-                  onChange={(e) => setNewDriver({...newDriver, cin: e.target.value})}
+                  onChange={(e) => setNewDriver({ ...newDriver, cin: e.target.value })}
                   className="w-full px-4 py-2 border rounded-lg"
                   required
                 />
@@ -277,22 +417,18 @@ const Drivers = ({ drivers, setDrivers, contracts, vehicles, currentUser, hasPer
                 <label className="block text-sm font-medium mb-2">Jour de repos</label>
                 <select
                   value={newDriver.restDay}
-                  onChange={(e) => setNewDriver({...newDriver, restDay: e.target.value})}
+                  onChange={(e) => setNewDriver({ ...newDriver, restDay: e.target.value })}
                   className="w-full px-4 py-2 border rounded-lg"
                   required
                 >
-                  <option value="Lundi">Lundi</option>
-                  <option value="Mardi">Mardi</option>
-                  <option value="Mercredi">Mercredi</option>
-                  <option value="Jeudi">Jeudi</option>
-                  <option value="Vendredi">Vendredi</option>
-                  <option value="Samedi">Samedi</option>
-                  <option value="Dimanche">Dimanche</option>
+                  {['Lundi','Mardi','Mercredi','Jeudi','Vendredi','Samedi','Dimanche'].map(d => (
+                    <option key={d} value={d}>{d}</option>
+                  ))}
                 </select>
               </div>
               <div className="flex gap-2">
-                <button type="submit" className="flex-1 bg-green-600 text-white py-2 rounded-lg">
-                  Créer
+                <button disabled={isSubmitting} type="submit" className="flex-1 bg-green-600 text-white py-2 rounded-lg disabled:opacity-60">
+                  {isSubmitting ? 'Création...' : 'Créer'}
                 </button>
                 <button
                   type="button"
@@ -313,28 +449,24 @@ const Drivers = ({ drivers, setDrivers, contracts, vehicles, currentUser, hasPer
           <div className="bg-white rounded-xl p-8 max-w-md w-full">
             <h2 className="text-2xl font-bold mb-6">Modifier le jour de repos</h2>
             <p className="text-gray-600 mb-4">{editingDriver.name}</p>
-            
+
             <form onSubmit={handleUpdateRestDay}>
               <div className="mb-6">
                 <label className="block text-sm font-medium mb-2">Jour de repos</label>
                 <select
                   value={editingDriver.restDay}
-                  onChange={(e) => setEditingDriver({...editingDriver, restDay: e.target.value})}
+                  onChange={(e) => setEditingDriver({ ...editingDriver, restDay: e.target.value })}
                   className="w-full px-4 py-2 border rounded-lg"
                   required
                 >
-                  <option value="Lundi">Lundi</option>
-                  <option value="Mardi">Mardi</option>
-                  <option value="Mercredi">Mercredi</option>
-                  <option value="Jeudi">Jeudi</option>
-                  <option value="Vendredi">Vendredi</option>
-                  <option value="Samedi">Samedi</option>
-                  <option value="Dimanche">Dimanche</option>
+                  {['Lundi','Mardi','Mercredi','Jeudi','Vendredi','Samedi','Dimanche'].map(d => (
+                    <option key={d} value={d}>{d}</option>
+                  ))}
                 </select>
               </div>
               <div className="flex gap-2">
-                <button type="submit" className="flex-1 bg-blue-600 text-white py-2 rounded-lg">
-                  Enregistrer
+                <button disabled={isSubmitting} type="submit" className="flex-1 bg-blue-600 text-white py-2 rounded-lg disabled:opacity-60">
+                  {isSubmitting ? 'Enregistrement...' : 'Enregistrer'}
                 </button>
                 <button
                   type="button"
@@ -353,15 +485,17 @@ const Drivers = ({ drivers, setDrivers, contracts, vehicles, currentUser, hasPer
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         {validatedDrivers.map(driver => {
           const contract = getDriverContract(driver.id);
-          const vehicle = getDriverVehicle(driver.vehicleId);
+          const vehicleId = driver.vehicleId || getContractVehicleId(contract);
+          const vehicle = vehicleId ? getDriverVehicle(vehicleId) : null;
+
           const licenseExpiry = new Date(driver.licenseExpiry);
           const daysUntilExpiry = Math.floor((licenseExpiry - new Date()) / (1000 * 60 * 60 * 24));
           const isLicenseExpiringSoon = daysUntilExpiry < 30 && daysUntilExpiry >= 0;
           const isLicenseExpired = daysUntilExpiry < 0;
 
           return (
-            <div 
-              key={driver.id} 
+            <div
+              key={driver.id}
               className="bg-white rounded-xl shadow-lg border-l-4 border-blue-500 overflow-hidden"
             >
               <div className="bg-blue-50 p-4">
@@ -379,12 +513,14 @@ const Drivers = ({ drivers, setDrivers, contracts, vehicles, currentUser, hasPer
                     <button
                       onClick={() => setEditingDriver(driver)}
                       className="text-blue-600 hover:text-blue-800"
+                      title="Modifier jour de repos"
                     >
                       <Edit size={20} />
                     </button>
                     <button
                       onClick={() => handleDeleteDriver(driver.id)}
                       className="text-red-600 hover:text-red-800"
+                      title="Supprimer"
                     >
                       <Trash2 size={20} />
                     </button>
@@ -405,10 +541,10 @@ const Drivers = ({ drivers, setDrivers, contracts, vehicles, currentUser, hasPer
                 </div>
 
                 <div className={`p-3 rounded border ${
-                  isLicenseExpired 
-                    ? 'bg-red-50 border-red-300' 
-                    : isLicenseExpiringSoon 
-                    ? 'bg-yellow-50 border-yellow-300' 
+                  isLicenseExpired
+                    ? 'bg-red-50 border-red-300'
+                    : isLicenseExpiringSoon
+                    ? 'bg-yellow-50 border-yellow-300'
                     : 'bg-gray-50 border-gray-200'
                 }`}>
                   <div className="flex justify-between items-center">
@@ -429,8 +565,8 @@ const Drivers = ({ drivers, setDrivers, contracts, vehicles, currentUser, hasPer
                     <div className="mt-2 flex items-center gap-2 text-xs">
                       <AlertCircle size={14} className={isLicenseExpired ? 'text-red-600' : 'text-yellow-600'} />
                       <span className={isLicenseExpired ? 'text-red-600' : 'text-yellow-700'}>
-                        {isLicenseExpired 
-                          ? `Expiré depuis ${Math.abs(daysUntilExpiry)} jour(s)` 
+                        {isLicenseExpired
+                          ? `Expiré depuis ${Math.abs(daysUntilExpiry)} jour(s)`
                           : `Expire dans ${daysUntilExpiry} jour(s)`}
                       </span>
                     </div>
@@ -450,13 +586,15 @@ const Drivers = ({ drivers, setDrivers, contracts, vehicles, currentUser, hasPer
                     <div className="flex justify-between items-center mb-1">
                       <p className="text-xs text-purple-700">Contrat</p>
                       <span className={`px-2 py-1 rounded text-xs font-bold ${
-                        contract.type === 'LAO' ? 'bg-blue-200 text-blue-800' : 'bg-green-200 text-green-800'
+                        (contract.type === 'LAO')
+                          ? 'bg-blue-200 text-blue-800'
+                          : 'bg-green-200 text-green-800'
                       }`}>
                         {contract.type}
                       </span>
                     </div>
                     <p className="font-bold text-purple-900">
-                      {contract.dailyAmount.toLocaleString()} FCFA/jour
+                      {(Number(getContractDailyAmount(contract)) || 0).toLocaleString()} FCFA/jour
                     </p>
                   </div>
                 )}
@@ -478,6 +616,7 @@ const Drivers = ({ drivers, setDrivers, contracts, vehicles, currentUser, hasPer
                     </button>
                   </div>
                 </div>
+
               </div>
             </div>
           );
