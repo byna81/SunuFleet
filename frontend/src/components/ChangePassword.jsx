@@ -1,6 +1,7 @@
-// ChangePassword.jsx - Changement de mot de passe
+// ChangePassword.jsx - Changement de mot de passe (AVEC SUPABASE)
 import React, { useState } from 'react';
 import { Lock, Eye, EyeOff, AlertCircle, CheckCircle } from 'lucide-react';
+import { supabase } from '../lib/supabaseClient';
 
 const ChangePassword = ({ currentUser, allUsers, setAllUsers, onClose }) => {
   const [formData, setFormData] = useState({
@@ -15,29 +16,25 @@ const ChangePassword = ({ currentUser, allUsers, setAllUsers, onClose }) => {
   });
   const [errors, setErrors] = useState({});
   const [success, setSuccess] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   const validatePassword = (password) => {
-    const errors = [];
-    if (password.length < 8) {
-      errors.push('Au moins 8 caractères');
-    }
-    if (!/[A-Z]/.test(password)) {
-      errors.push('Au moins une majuscule');
-    }
-    if (!/[a-z]/.test(password)) {
-      errors.push('Au moins une minuscule');
-    }
-    if (!/[0-9]/.test(password)) {
-      errors.push('Au moins un chiffre');
-    }
-    return errors;
+    const errs = [];
+    if (password.length < 8) errs.push('Au moins 8 caractères');
+    if (!/[A-Z]/.test(password)) errs.push('Au moins une majuscule');
+    if (!/[a-z]/.test(password)) errs.push('Au moins une minuscule');
+    if (!/[0-9]/.test(password)) errs.push('Au moins un chiffre');
+    return errs;
   };
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
+    if (isSubmitting) return;
+
     const newErrors = {};
 
-    // Vérifier mot de passe actuel
+    // Vérifier mot de passe actuel (sur l'utilisateur en session)
+    // (Optionnel: on pourrait relire en base, mais ici on reste simple)
     if (formData.currentPassword !== currentUser.password) {
       newErrors.currentPassword = 'Mot de passe actuel incorrect';
     }
@@ -58,25 +55,37 @@ const ChangePassword = ({ currentUser, allUsers, setAllUsers, onClose }) => {
       return;
     }
 
-    // Mettre à jour le mot de passe
-    const updatedUsers = allUsers.map(u => {
-      if (u.id === currentUser.id) {
-        return {
-          ...u,
+    setIsSubmitting(true);
+    try {
+      // ⚠️ Ta table 'users' contient: password, must_change_password (bool)
+      // Elle ne contient pas forcément 'passwordChangedAt' / 'mustChangePassword' (camelCase)
+      const { data, error } = await supabase
+        .from('users')
+        .update({
           password: formData.newPassword,
-          passwordChangedAt: new Date().toISOString(),
-          mustChangePassword: false
-        };
+          must_change_password: false,
+        })
+        .eq('id', currentUser.id)
+        .select('*')
+        .single();
+
+      if (error) {
+        console.error('Update password error:', error);
+        alert('❌ Erreur modification mot de passe: ' + error.message);
+        return;
       }
-      return u;
-    });
 
-    setAllUsers(updatedUsers);
-    setSuccess(true);
+      // Mettre à jour la liste locale pour refléter la DB
+      const updatedUsers = allUsers.map(u => (u.id === currentUser.id ? data : u));
+      setAllUsers(updatedUsers);
 
-    setTimeout(() => {
-      onClose();
-    }, 2000);
+      setSuccess(true);
+      setTimeout(() => {
+        onClose();
+      }, 1500);
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   return (
@@ -93,7 +102,7 @@ const ChangePassword = ({ currentUser, allUsers, setAllUsers, onClose }) => {
             <h3 className="text-xl font-bold text-green-900 mb-2">
               ✅ Mot de passe modifié !
             </h3>
-            <p className="text-green-700">Vous allez être redirigé...</p>
+            <p className="text-green-700">Fermeture...</p>
           </div>
         ) : (
           <form onSubmit={handleSubmit}>
@@ -107,15 +116,15 @@ const ChangePassword = ({ currentUser, allUsers, setAllUsers, onClose }) => {
                   type={showPasswords.current ? 'text' : 'password'}
                   value={formData.currentPassword}
                   onChange={(e) => {
-                    setFormData({...formData, currentPassword: e.target.value});
-                    setErrors({...errors, currentPassword: ''});
+                    setFormData({ ...formData, currentPassword: e.target.value });
+                    setErrors({ ...errors, currentPassword: '' });
                   }}
                   className="w-full px-4 py-2 border rounded-lg pr-10"
                   required
                 />
                 <button
                   type="button"
-                  onClick={() => setShowPasswords({...showPasswords, current: !showPasswords.current})}
+                  onClick={() => setShowPasswords({ ...showPasswords, current: !showPasswords.current })}
                   className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500"
                 >
                   {showPasswords.current ? <EyeOff size={20} /> : <Eye size={20} />}
@@ -139,15 +148,15 @@ const ChangePassword = ({ currentUser, allUsers, setAllUsers, onClose }) => {
                   type={showPasswords.new ? 'text' : 'password'}
                   value={formData.newPassword}
                   onChange={(e) => {
-                    setFormData({...formData, newPassword: e.target.value});
-                    setErrors({...errors, newPassword: ''});
+                    setFormData({ ...formData, newPassword: e.target.value });
+                    setErrors({ ...errors, newPassword: '' });
                   }}
                   className="w-full px-4 py-2 border rounded-lg pr-10"
                   required
                 />
                 <button
                   type="button"
-                  onClick={() => setShowPasswords({...showPasswords, new: !showPasswords.new})}
+                  onClick={() => setShowPasswords({ ...showPasswords, new: !showPasswords.new })}
                   className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500"
                 >
                   {showPasswords.new ? <EyeOff size={20} /> : <Eye size={20} />}
@@ -174,15 +183,15 @@ const ChangePassword = ({ currentUser, allUsers, setAllUsers, onClose }) => {
                   type={showPasswords.confirm ? 'text' : 'password'}
                   value={formData.confirmPassword}
                   onChange={(e) => {
-                    setFormData({...formData, confirmPassword: e.target.value});
-                    setErrors({...errors, confirmPassword: ''});
+                    setFormData({ ...formData, confirmPassword: e.target.value });
+                    setErrors({ ...errors, confirmPassword: '' });
                   }}
                   className="w-full px-4 py-2 border rounded-lg pr-10"
                   required
                 />
                 <button
                   type="button"
-                  onClick={() => setShowPasswords({...showPasswords, confirm: !showPasswords.confirm})}
+                  onClick={() => setShowPasswords({ ...showPasswords, confirm: !showPasswords.confirm })}
                   className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500"
                 >
                   {showPasswords.confirm ? <EyeOff size={20} /> : <Eye size={20} />}
@@ -199,9 +208,10 @@ const ChangePassword = ({ currentUser, allUsers, setAllUsers, onClose }) => {
             <div className="flex gap-2">
               <button
                 type="submit"
-                className="flex-1 bg-blue-600 text-white py-2 rounded-lg hover:bg-blue-700"
+                disabled={isSubmitting}
+                className="flex-1 bg-blue-600 text-white py-2 rounded-lg hover:bg-blue-700 disabled:opacity-60"
               >
-                Modifier
+                {isSubmitting ? 'Modification...' : 'Modifier'}
               </button>
               <button
                 type="button"
