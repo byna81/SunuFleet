@@ -1,6 +1,7 @@
-// Users.jsx - Gestion des utilisateurs (Admin uniquement)
+// Users.jsx - Gestion des utilisateurs (Admin uniquement) - AVEC SUPABASE (INSERT/DELETE)
 import React, { useState } from 'react';
 import { Plus, Trash2 } from 'lucide-react';
+import { supabase } from '../lib/supabaseClient';
 
 const Users = ({ allUsers, setAllUsers, currentUser }) => {
   const [showAddUser, setShowAddUser] = useState(false);
@@ -11,40 +12,80 @@ const Users = ({ allUsers, setAllUsers, currentUser }) => {
     email: '',
     phone: ''
   });
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
-  const handleAddUser = (e) => {
+  const handleAddUser = async (e) => {
     e.preventDefault();
-    
-    const avatars = ['👨🏿‍💼', '👩🏿‍💼', '👨🏿', '👩🏿', '👨🏿‍🔧', '👩🏿‍🔧'];
-    const randomAvatar = avatars[Math.floor(Math.random() * avatars.length)];
-    
-    const user = {
-      id: allUsers.length + 1,
-      ...newUser,
-      role: 'Gestionnaire',
-      avatar: randomAvatar,
-      permissions: ['drivers', 'contracts', 'payments', 'vehicles', 'maintenance', 'alerts'],
-      createdBy: currentUser.id,
-      createdAt: new Date().toISOString().split('T')[0]
-    };
-    
-    setAllUsers([...allUsers, user]);
-    alert(`✅ Utilisateur créé!\n${newUser.name} - Gestionnaire`);
-    setShowAddUser(false);
-    setNewUser({ username: '', password: '', name: '', email: '', phone: '' });
+    if (isSubmitting) return;
+
+    setIsSubmitting(true);
+
+    try {
+      const avatars = ['👨🏿‍💼', '👩🏿‍💼', '👨🏿', '👩🏿', '👨🏿‍🔧', '👩🏿‍🔧'];
+      const randomAvatar = avatars[Math.floor(Math.random() * avatars.length)];
+
+      const payload = {
+        username: (newUser.username || '').trim(),
+        password: (newUser.password || '').trim(),
+        name: (newUser.name || '').trim(),
+        email: (newUser.email || '').trim(),
+        phone: (newUser.phone || '').trim(),
+        role: 'Gestionnaire',
+        avatar: randomAvatar,
+        // jsonb array
+        permissions: ['drivers', 'contracts', 'payments', 'vehicles', 'maintenance', 'alerts'],
+        must_change_password: false,
+        createdBy: currentUser?.id ?? null,
+        createdAt: new Date().toISOString().split('T')[0],
+      };
+
+      const { data, error } = await supabase
+        .from('users')
+        .insert([payload])
+        .select('*')
+        .single();
+
+      if (error) {
+        console.error('Insert user error:', error);
+        alert('❌ Erreur création utilisateur: ' + error.message);
+        return;
+      }
+
+      // Ajoute la ligne réellement insérée (avec id DB)
+      setAllUsers([data, ...allUsers]);
+      alert(`✅ Utilisateur créé!\n${data.name} - Gestionnaire`);
+
+      setShowAddUser(false);
+      setNewUser({ username: '', password: '', name: '', email: '', phone: '' });
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
-  const handleDeleteUser = (userId) => {
+  const handleDeleteUser = async (userId) => {
     const user = allUsers.find(u => u.id === userId);
+    if (!user) return;
+
     if (user.role === 'Administrateur') {
       alert('Impossible de supprimer un administrateur');
       return;
     }
-    
-    if (confirm(`Supprimer ${user.name} ?`)) {
-      setAllUsers(allUsers.filter(u => u.id !== userId));
-      alert(`✅ ${user.name} supprimé`);
+
+    if (!confirm(`Supprimer ${user.name} ?`)) return;
+
+    const { error } = await supabase
+      .from('users')
+      .delete()
+      .eq('id', userId);
+
+    if (error) {
+      console.error('Delete user error:', error);
+      alert('❌ Erreur suppression: ' + error.message);
+      return;
     }
+
+    setAllUsers(allUsers.filter(u => u.id !== userId));
+    alert(`✅ ${user.name} supprimé`);
   };
 
   return (
@@ -71,55 +112,64 @@ const Users = ({ allUsers, setAllUsers, currentUser }) => {
                 <input
                   type="text"
                   value={newUser.name}
-                  onChange={(e) => setNewUser({...newUser, name: e.target.value})}
+                  onChange={(e) => setNewUser({ ...newUser, name: e.target.value })}
                   className="w-full px-4 py-2 border rounded-lg"
                   required
                 />
               </div>
+
               <div className="mb-4">
                 <label className="block text-sm font-medium mb-2">Nom d'utilisateur</label>
                 <input
                   type="text"
                   value={newUser.username}
-                  onChange={(e) => setNewUser({...newUser, username: e.target.value})}
+                  onChange={(e) => setNewUser({ ...newUser, username: e.target.value })}
                   className="w-full px-4 py-2 border rounded-lg"
                   required
                 />
               </div>
+
               <div className="mb-4">
                 <label className="block text-sm font-medium mb-2">Mot de passe</label>
                 <input
                   type="password"
                   value={newUser.password}
-                  onChange={(e) => setNewUser({...newUser, password: e.target.value})}
+                  onChange={(e) => setNewUser({ ...newUser, password: e.target.value })}
                   className="w-full px-4 py-2 border rounded-lg"
                   required
                 />
               </div>
+
               <div className="mb-4">
                 <label className="block text-sm font-medium mb-2">Email</label>
                 <input
                   type="email"
                   value={newUser.email}
-                  onChange={(e) => setNewUser({...newUser, email: e.target.value})}
+                  onChange={(e) => setNewUser({ ...newUser, email: e.target.value })}
                   className="w-full px-4 py-2 border rounded-lg"
                   required
                 />
               </div>
+
               <div className="mb-4">
                 <label className="block text-sm font-medium mb-2">Téléphone</label>
                 <input
                   type="tel"
                   value={newUser.phone}
-                  onChange={(e) => setNewUser({...newUser, phone: e.target.value})}
+                  onChange={(e) => setNewUser({ ...newUser, phone: e.target.value })}
                   className="w-full px-4 py-2 border rounded-lg"
                   placeholder="+221 XX XXX XXXX"
                   required
                 />
               </div>
+
               <div className="flex gap-2">
-                <button type="submit" className="flex-1 bg-green-600 text-white py-2 rounded-lg hover:bg-green-700">
-                  Créer
+                <button
+                  type="submit"
+                  disabled={isSubmitting}
+                  className="flex-1 bg-green-600 text-white py-2 rounded-lg hover:bg-green-700 disabled:opacity-60"
+                >
+                  {isSubmitting ? 'Création...' : 'Créer'}
                 </button>
                 <button
                   type="button"
@@ -140,7 +190,7 @@ const Users = ({ allUsers, setAllUsers, currentUser }) => {
           <div key={user.id} className="bg-white rounded-xl shadow-lg p-6">
             <div className="flex items-start justify-between">
               <div className="flex items-center gap-4">
-                <div className="text-5xl">{user.avatar}</div>
+                <div className="text-5xl">{user.avatar || '👤'}</div>
                 <div>
                   <h3 className="font-bold text-xl">{user.name}</h3>
                   <p className="text-sm text-gray-600">{user.role}</p>
@@ -151,6 +201,7 @@ const Users = ({ allUsers, setAllUsers, currentUser }) => {
                 <button
                   onClick={() => handleDeleteUser(user.id)}
                   className="text-red-600 hover:text-red-800"
+                  title="Supprimer"
                 >
                   <Trash2 size={20} />
                 </button>
