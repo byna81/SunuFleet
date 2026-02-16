@@ -279,7 +279,7 @@ const Owners = ({ managementContracts, setManagementContracts, currentUser, hasP
           className="bg-green-600 text-white px-6 py-3 rounded-lg flex items-center gap-2 hover:bg-green-700"
         >
           <Plus size={20} />
-          Ajouter un propriétaire
+          Ajouter un contrat
         </button>
       </div>
 
