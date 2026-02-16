@@ -1,11 +1,18 @@
-// Contracts-v2.jsx - Gestion contrats avec CRUD + Validation Admin
-import React, { useState } from 'react';
+// Contracts.jsx - Gestion contrats AVEC SUPABASE (CRUD + Validation Admin)
+// ✅ Insert/Update/Delete en base Supabase
+// ✅ Compatible snake_case (DB) + camelCase (UI) pour éviter les "Aucun contrat actif trouvé"
+// ✅ Fallback automatique si la table n'a pas certaines colonnes (évite erreurs "schema cache")
+
+import React, { useMemo, useState } from 'react';
 import { FileText, Calendar, DollarSign, AlertCircle, Plus, Edit, Trash2, CheckCircle, XCircle } from 'lucide-react';
+import { supabase } from '../lib/supabaseClient';
 
 const Contracts = ({ contracts, setContracts, drivers, vehicles, currentUser, hasPermission }) => {
   const [selectedContract, setSelectedContract] = useState(null);
   const [showAddContract, setShowAddContract] = useState(false);
   const [editingContract, setEditingContract] = useState(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
   const [newContract, setNewContract] = useState({
     driverId: '',
     vehicleId: '',
@@ -18,134 +25,254 @@ const Contracts = ({ contracts, setContracts, drivers, vehicles, currentUser, ha
     restDay: 'Lundi'
   });
 
-  const pendingContracts = contracts?.filter(c => c.status === 'pending') || [];
-  const activeContracts = contracts?.filter(c => c.status === 'active' || !c.status) || [];
+  // --- helpers compat snake/camel ---
+  const get = (obj, snake, camel, fallback = undefined) => (obj?.[snake] ?? obj?.[camel] ?? fallback);
+  const asNumber = (v) => {
+    const n = typeof v === 'number' ? v : parseFloat(String(v ?? '').replace(',', '.'));
+    return Number.isFinite(n) ? n : 0;
+  };
 
-  const handleAddContract = (e) => {
-    e.preventDefault();
+  const normalized = useMemo(() => {
+    return (contracts || []).map(c => ({
+      ...c,
+      // champs normalisés pour l’UI
+      _driverId: Number(get(c, 'driver_id', 'driverId', 0)),
+      _driverName: String(get(c, 'driver_name', 'driverName', '')),
+      _vehicleId: String(get(c, 'vehicle_id', 'vehicleId', '')),
+      _type: String(get(c, 'type', 'type', '')),
+      _startDate: String(get(c, 'start_date', 'startDate', '')),
+      _endDate: String(get(c, 'end_date', 'endDate', '')),
+      _dailyAmount: asNumber(get(c, 'daily_amount', 'dailyAmount', 0)),
+      _deposit: asNumber(get(c, 'deposit', 'deposit', 0)),
+      _totalAmount: asNumber(get(c, 'total_amount', 'totalAmount', 0)),
+      _restDay: String(get(c, 'rest_day', 'restDay', '')),
+      _status: get(c, 'status', 'status', null),
+      _createdByName: String(get(c, 'created_by_name', 'createdByName', '')),
+    }));
+  }, [contracts]);
 
-    const driver = drivers.find(d => d.id === parseInt(newContract.driverId));
-    const vehicle = vehicles.find(v => v.id === newContract.vehicleId);
+  const pendingContracts = normalized.filter(c => c._status === 'pending');
+  const activeContracts = normalized.filter(c => c._status === 'active' || c._status === 'validated' || !c._status);
 
-    const contract = {
-      id: (contracts?.length || 0) + 1,
-      ...newContract,
-      driverId: parseInt(newContract.driverId),
-      driverName: driver?.name || '',
-      dailyAmount: parseFloat(newContract.dailyAmount),
-      deposit: parseFloat(newContract.deposit),
-      totalAmount: parseFloat(newContract.totalAmount),
-      status: hasPermission('all') ? 'active' : 'pending',
-      createdBy: currentUser.id,
-      createdByName: currentUser.name,
-      createdAt: new Date().toISOString()
-    };
+  // --- Helpers: retry si colonne inexistante ---
+  const dropUnknownColumnFromError = (payload, err) => {
+    const msg = String(err?.message || '');
+    const m = msg.match(/Could not find the '([^']+)' column/);
+    if (!m) return null;
+    const col = m[1];
+    if (!(col in payload)) return null;
+    const next = { ...payload };
+    delete next[col];
+    return next;
+  };
 
-    if (hasPermission('all')) {
-      contract.validatedBy = currentUser.id;
-      contract.validatedByName = currentUser.name;
-      contract.validatedAt = new Date().toISOString();
+  const supabaseInsertWithFallback = async (table, payload) => {
+    let p = { ...payload };
+    for (let i = 0; i < 10; i++) {
+      const { data, error } = await supabase.from(table).insert([p]).select('*').single();
+      if (!error) return { data, error: null };
+      const next = dropUnknownColumnFromError(p, error);
+      if (!next) return { data: null, error };
+      p = next;
     }
-
-    setContracts([...(contracts || []), contract]);
-
-    alert(
-      hasPermission('all')
-        ? `✅ Contrat créé et validé!\n${driver?.name} - ${contract.type}`
-        : `✅ Contrat créé!\nEn attente de validation Admin\n${driver?.name} - ${contract.type}`
-    );
-
-    setShowAddContract(false);
-    setNewContract({
-      driverId: '',
-      vehicleId: '',
-      type: 'LAO',
-      startDate: '',
-      endDate: '',
-      dailyAmount: '',
-      deposit: '',
-      totalAmount: '',
-      restDay: 'Lundi'
-    });
+    return { data: null, error: { message: 'Insert failed after retries' } };
   };
 
-  const handleEditContract = (e) => {
+  const supabaseUpdateWithFallback = async (table, id, payload) => {
+    let p = { ...payload };
+    for (let i = 0; i < 10; i++) {
+      const { data, error } = await supabase.from(table).update(p).eq('id', id).select('*').single();
+      if (!error) return { data, error: null };
+      const next = dropUnknownColumnFromError(p, error);
+      if (!next) return { data: null, error };
+      p = next;
+    }
+    return { data: null, error: { message: 'Update failed after retries' } };
+  };
+
+  // --- CRUD ---
+  const handleAddContract = async (e) => {
     e.preventDefault();
+    if (isSubmitting) return;
+    setIsSubmitting(true);
 
-    const driver = drivers.find(d => d.id === parseInt(editingContract.driverId));
+    try {
+      const driverId = Number(newContract.driverId);
+      const vehicleId = String(newContract.vehicleId);
 
-    const updatedContracts = (contracts || []).map(c => {
-      if (c.id === editingContract.id) {
-        return {
-          ...c,
-          ...editingContract,
-          driverId: parseInt(editingContract.driverId),
-          driverName: driver?.name || c.driverName,
-          dailyAmount: parseFloat(editingContract.dailyAmount),
-          deposit: parseFloat(editingContract.deposit),
-          totalAmount: parseFloat(editingContract.totalAmount),
-          status: hasPermission('all') ? c.status : 'pending',
-          modifiedBy: currentUser.id,
-          modifiedByName: currentUser.name,
-          modifiedAt: new Date().toISOString()
-        };
+      const driver = (drivers || []).find(d => Number(d.id) === driverId);
+      const vehicle = (vehicles || []).find(v => String(v.id) === vehicleId);
+
+      if (!driver) {
+        alert('❌ Chauffeur invalide');
+        return;
       }
-      return c;
-    });
+      if (!vehicle) {
+        alert('❌ Véhicule invalide');
+        return;
+      }
 
-    setContracts(updatedContracts);
-    alert('✅ Contrat modifié!');
-    setEditingContract(null);
+      const status = hasPermission('all') ? 'active' : 'pending';
+
+      // ✅ payload SNAKE_CASE (correspond à ta table SQL)
+      const payload = {
+        driver_id: driverId,
+        driver_name: driver?.name || '',
+        vehicle_id: vehicleId,
+        type: newContract.type,
+        start_date: newContract.startDate,
+        end_date: newContract.endDate,
+        daily_amount: asNumber(newContract.dailyAmount),
+        deposit: asNumber(newContract.deposit),
+        total_amount: asNumber(newContract.totalAmount),
+        rest_day: newContract.restDay,
+        status,
+
+        created_by: currentUser?.id ?? null,
+        created_by_name: currentUser?.name ?? '',
+        created_at: new Date().toISOString(),
+      };
+
+      if (hasPermission('all')) {
+        payload.validated_by = currentUser?.id ?? null;
+        payload.validated_by_name = currentUser?.name ?? '';
+        payload.validated_at = new Date().toISOString();
+      }
+
+      const { data, error } = await supabaseInsertWithFallback('contracts', payload);
+      if (error) {
+        console.error('Insert contract error:', error);
+        alert('❌ Erreur création contrat: ' + error.message);
+        return;
+      }
+
+      setContracts([...(contracts || []), data]);
+
+      alert(
+        hasPermission('all')
+          ? `✅ Contrat créé et activé!\n${driver?.name || ''} - ${data.type}`
+          : `✅ Contrat créé!\nEn attente de validation Admin\n${driver?.name || ''} - ${data.type}`
+      );
+
+      setShowAddContract(false);
+      setNewContract({
+        driverId: '',
+        vehicleId: '',
+        type: 'LAO',
+        startDate: '',
+        endDate: '',
+        dailyAmount: '',
+        deposit: '',
+        totalAmount: '',
+        restDay: 'Lundi'
+      });
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
-  const handleDeleteContract = (contractId) => {
-    const contract = (contracts || []).find(c => c.id === contractId);
+  const handleEditContract = async (e) => {
+    e.preventDefault();
+    if (!editingContract || isSubmitting) return;
+    setIsSubmitting(true);
+
+    try {
+      const id = Number(editingContract.id);
+
+      const driverId = Number(get(editingContract, 'driver_id', 'driverId', 0));
+      const driver = (drivers || []).find(d => Number(d.id) === driverId);
+
+      const payload = {
+        // on ne met à jour que ce que le formulaire modifie
+        daily_amount: asNumber(editingContract._dailyAmount ?? get(editingContract, 'daily_amount', 'dailyAmount', 0)),
+        rest_day: String(editingContract._restDay ?? get(editingContract, 'rest_day', 'restDay', '')),
+
+        // sécurise le driver_name si présent
+        driver_name: driver?.name || get(editingContract, 'driver_name', 'driverName', ''),
+
+        status: hasPermission('all') ? get(editingContract, 'status', 'status', 'active') : 'pending',
+
+        modified_by: currentUser?.id ?? null,
+        modified_by_name: currentUser?.name ?? '',
+        modified_at: new Date().toISOString(),
+      };
+
+      const { data, error } = await supabaseUpdateWithFallback('contracts', id, payload);
+      if (error) {
+        console.error('Update contract error:', error);
+        alert('❌ Erreur modification contrat: ' + error.message);
+        return;
+      }
+
+      setContracts((contracts || []).map(c => (Number(c.id) === Number(data.id) ? data : c)));
+      alert('✅ Contrat modifié!');
+      setEditingContract(null);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleDeleteContract = async (contractId) => {
+    const contract = (contracts || []).find(c => Number(c.id) === Number(contractId));
     if (!contract) return;
 
-    if (window.confirm(`Supprimer le contrat de ${contract.driverName} ?`)) {
-      const updatedContracts = (contracts || []).filter(c => c.id !== contractId);
-      setContracts(updatedContracts);
-      alert('✅ Contrat supprimé');
+    const driverName = contract.driver_name ?? contract.driverName ?? '';
+    if (!window.confirm(`Supprimer le contrat de ${driverName} ?`)) return;
+
+    const { error } = await supabase.from('contracts').delete().eq('id', contractId);
+    if (error) {
+      console.error('Delete contract error:', error);
+      alert('❌ Erreur suppression contrat: ' + error.message);
+      return;
     }
+
+    setContracts((contracts || []).filter(c => Number(c.id) !== Number(contractId)));
+    alert('✅ Contrat supprimé');
   };
 
-  const handleValidateContract = (contractId) => {
-    const updatedContracts = (contracts || []).map(c => {
-      if (c.id === contractId) {
-        return {
-          ...c,
-          status: 'active',
-          validatedBy: currentUser.id,
-          validatedByName: currentUser.name,
-          validatedAt: new Date().toISOString()
-        };
-      }
-      return c;
-    });
+  const handleValidateContract = async (contractId) => {
+    if (!hasPermission('all')) return;
 
-    setContracts(updatedContracts);
+    const payload = {
+      status: 'active',
+      validated_by: currentUser?.id ?? null,
+      validated_by_name: currentUser?.name ?? '',
+      validated_at: new Date().toISOString(),
+    };
+
+    const { data, error } = await supabaseUpdateWithFallback('contracts', contractId, payload);
+    if (error) {
+      console.error('Validate contract error:', error);
+      alert('❌ Erreur validation: ' + error.message);
+      return;
+    }
+
+    setContracts((contracts || []).map(c => (Number(c.id) === Number(data.id) ? data : c)));
     alert('✅ Contrat validé');
   };
 
-  const handleRejectContract = (contractId) => {
+  const handleRejectContract = async (contractId) => {
+    if (!hasPermission('all')) return;
+
     const reason = window.prompt('Motif du rejet:');
     if (!reason) return;
 
-    const updatedContracts = (contracts || []).map(c => {
-      if (c.id === contractId) {
-        return {
-          ...c,
-          status: 'rejected',
-          rejectedBy: currentUser.id,
-          rejectedByName: currentUser.name,
-          rejectedAt: new Date().toISOString(),
-          rejectionReason: reason
-        };
-      }
-      return c;
-    });
+    const payload = {
+      status: 'rejected',
+      rejected_by: currentUser?.id ?? null,
+      rejected_by_name: currentUser?.name ?? '',
+      rejected_at: new Date().toISOString(),
+      rejection_reason: reason,
+    };
 
-    setContracts(updatedContracts);
+    const { data, error } = await supabaseUpdateWithFallback('contracts', contractId, payload);
+    if (error) {
+      console.error('Reject contract error:', error);
+      alert('❌ Erreur rejet: ' + error.message);
+      return;
+    }
+
+    setContracts((contracts || []).map(c => (Number(c.id) === Number(data.id) ? data : c)));
     alert('❌ Contrat rejeté');
   };
 
@@ -153,8 +280,7 @@ const Contracts = ({ contracts, setContracts, drivers, vehicles, currentUser, ha
     const end = new Date(endDate);
     const today = new Date();
     const diffTime = end - today;
-    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-    return diffDays;
+    return Math.ceil(diffTime / (1000 * 60 * 60 * 24));
   };
 
   const calculateProgress = (startDate, endDate) => {
@@ -163,7 +289,7 @@ const Contracts = ({ contracts, setContracts, drivers, vehicles, currentUser, ha
     const today = new Date();
     const total = end - start;
     const elapsed = today - start;
-    return Math.min(Math.max((elapsed / total) * 100, 0), 100);
+    return total > 0 ? Math.min(Math.max((elapsed / total) * 100, 0), 100) : 0;
   };
 
   return (
@@ -190,7 +316,7 @@ const Contracts = ({ contracts, setContracts, drivers, vehicles, currentUser, ha
             <h3 className="font-bold text-blue-900">Contrats LAO</h3>
           </div>
           <p className="text-3xl font-bold text-blue-700">
-            {activeContracts.filter(c => c.type === 'LAO').length}
+            {activeContracts.filter(c => c._type === 'LAO').length}
           </p>
         </div>
 
@@ -200,7 +326,7 @@ const Contracts = ({ contracts, setContracts, drivers, vehicles, currentUser, ha
             <h3 className="font-bold text-green-900">Contrats Location</h3>
           </div>
           <p className="text-3xl font-bold text-green-700">
-            {activeContracts.filter(c => c.type === 'Location').length}
+            {activeContracts.filter(c => c._type === 'Location').length}
           </p>
         </div>
 
@@ -210,7 +336,7 @@ const Contracts = ({ contracts, setContracts, drivers, vehicles, currentUser, ha
             <h3 className="font-bold text-purple-900">Revenus journaliers</h3>
           </div>
           <p className="text-3xl font-bold text-purple-700">
-            {activeContracts.reduce((sum, c) => sum + c.dailyAmount, 0).toLocaleString()} FCFA
+            {activeContracts.reduce((sum, c) => sum + (Number(c._dailyAmount) || 0), 0).toLocaleString()} FCFA
           </p>
         </div>
       </div>
@@ -227,11 +353,13 @@ const Contracts = ({ contracts, setContracts, drivers, vehicles, currentUser, ha
               <div key={contract.id} className="bg-white p-4 rounded-lg border border-yellow-200">
                 <div className="flex justify-between items-start">
                   <div>
-                    <p className="font-bold text-lg">{contract.driverName}</p>
-                    <p className="text-sm text-gray-600">Type: {contract.type}</p>
-                    <p className="text-sm text-gray-600">Véhicule: {contract.vehicleId}</p>
-                    <p className="text-sm text-gray-600">Montant: {contract.dailyAmount.toLocaleString()} FCFA/jour</p>
-                    <p className="text-sm text-gray-500">Créé par: {contract.createdByName}</p>
+                    <p className="font-bold text-lg">{contract._driverName}</p>
+                    <p className="text-sm text-gray-600">Type: {contract._type}</p>
+                    <p className="text-sm text-gray-600">Véhicule: {contract._vehicleId}</p>
+                    <p className="text-sm text-gray-600">
+                      Montant: {(Number(contract._dailyAmount) || 0).toLocaleString()} FCFA/jour
+                    </p>
+                    <p className="text-sm text-gray-500">Créé par: {contract._createdByName}</p>
                   </div>
                   <div className="flex gap-2">
                     <button
@@ -266,12 +394,12 @@ const Contracts = ({ contracts, setContracts, drivers, vehicles, currentUser, ha
                 <label className="block text-sm font-medium mb-2">Chauffeur</label>
                 <select
                   value={newContract.driverId}
-                  onChange={(e) => setNewContract({...newContract, driverId: e.target.value})}
+                  onChange={(e) => setNewContract({ ...newContract, driverId: e.target.value })}
                   className="w-full px-4 py-2 border rounded-lg"
                   required
                 >
                   <option value="">Sélectionner</option>
-                  {drivers.map(d => (
+                  {(drivers || []).map(d => (
                     <option key={d.id} value={d.id}>{d.name}</option>
                   ))}
                 </select>
@@ -281,12 +409,12 @@ const Contracts = ({ contracts, setContracts, drivers, vehicles, currentUser, ha
                 <label className="block text-sm font-medium mb-2">Véhicule</label>
                 <select
                   value={newContract.vehicleId}
-                  onChange={(e) => setNewContract({...newContract, vehicleId: e.target.value})}
+                  onChange={(e) => setNewContract({ ...newContract, vehicleId: e.target.value })}
                   className="w-full px-4 py-2 border rounded-lg"
                   required
                 >
                   <option value="">Sélectionner</option>
-                  {vehicles.map(v => (
+                  {(vehicles || []).map(v => (
                     <option key={v.id} value={v.id}>{v.id} - {v.brand}</option>
                   ))}
                 </select>
@@ -296,7 +424,7 @@ const Contracts = ({ contracts, setContracts, drivers, vehicles, currentUser, ha
                 <label className="block text-sm font-medium mb-2">Type de contrat</label>
                 <select
                   value={newContract.type}
-                  onChange={(e) => setNewContract({...newContract, type: e.target.value})}
+                  onChange={(e) => setNewContract({ ...newContract, type: e.target.value })}
                   className="w-full px-4 py-2 border rounded-lg"
                   required
                 >
@@ -311,7 +439,7 @@ const Contracts = ({ contracts, setContracts, drivers, vehicles, currentUser, ha
                   <input
                     type="date"
                     value={newContract.startDate}
-                    onChange={(e) => setNewContract({...newContract, startDate: e.target.value})}
+                    onChange={(e) => setNewContract({ ...newContract, startDate: e.target.value })}
                     className="w-full px-4 py-2 border rounded-lg"
                     required
                   />
@@ -321,7 +449,7 @@ const Contracts = ({ contracts, setContracts, drivers, vehicles, currentUser, ha
                   <input
                     type="date"
                     value={newContract.endDate}
-                    onChange={(e) => setNewContract({...newContract, endDate: e.target.value})}
+                    onChange={(e) => setNewContract({ ...newContract, endDate: e.target.value })}
                     className="w-full px-4 py-2 border rounded-lg"
                     required
                   />
@@ -333,7 +461,7 @@ const Contracts = ({ contracts, setContracts, drivers, vehicles, currentUser, ha
                 <input
                   type="number"
                   value={newContract.dailyAmount}
-                  onChange={(e) => setNewContract({...newContract, dailyAmount: e.target.value})}
+                  onChange={(e) => setNewContract({ ...newContract, dailyAmount: e.target.value })}
                   className="w-full px-4 py-2 border rounded-lg"
                   required
                 />
@@ -344,7 +472,7 @@ const Contracts = ({ contracts, setContracts, drivers, vehicles, currentUser, ha
                 <input
                   type="number"
                   value={newContract.deposit}
-                  onChange={(e) => setNewContract({...newContract, deposit: e.target.value})}
+                  onChange={(e) => setNewContract({ ...newContract, deposit: e.target.value })}
                   className="w-full px-4 py-2 border rounded-lg"
                   required
                 />
@@ -355,7 +483,7 @@ const Contracts = ({ contracts, setContracts, drivers, vehicles, currentUser, ha
                 <input
                   type="number"
                   value={newContract.totalAmount}
-                  onChange={(e) => setNewContract({...newContract, totalAmount: e.target.value})}
+                  onChange={(e) => setNewContract({ ...newContract, totalAmount: e.target.value })}
                   className="w-full px-4 py-2 border rounded-lg"
                   required
                 />
@@ -365,23 +493,19 @@ const Contracts = ({ contracts, setContracts, drivers, vehicles, currentUser, ha
                 <label className="block text-sm font-medium mb-2">Jour de repos</label>
                 <select
                   value={newContract.restDay}
-                  onChange={(e) => setNewContract({...newContract, restDay: e.target.value})}
+                  onChange={(e) => setNewContract({ ...newContract, restDay: e.target.value })}
                   className="w-full px-4 py-2 border rounded-lg"
                   required
                 >
-                  <option value="Lundi">Lundi</option>
-                  <option value="Mardi">Mardi</option>
-                  <option value="Mercredi">Mercredi</option>
-                  <option value="Jeudi">Jeudi</option>
-                  <option value="Vendredi">Vendredi</option>
-                  <option value="Samedi">Samedi</option>
-                  <option value="Dimanche">Dimanche</option>
+                  {['Lundi','Mardi','Mercredi','Jeudi','Vendredi','Samedi','Dimanche'].map(d => (
+                    <option key={d} value={d}>{d}</option>
+                  ))}
                 </select>
               </div>
 
               <div className="flex gap-2">
-                <button type="submit" className="flex-1 bg-green-600 text-white py-2 rounded-lg">
-                  Créer
+                <button disabled={isSubmitting} type="submit" className="flex-1 bg-green-600 text-white py-2 rounded-lg disabled:opacity-60">
+                  {isSubmitting ? 'Création...' : 'Créer'}
                 </button>
                 <button
                   type="button"
@@ -406,8 +530,8 @@ const Contracts = ({ contracts, setContracts, drivers, vehicles, currentUser, ha
                 <label className="block text-sm font-medium mb-2">Montant journalier (FCFA)</label>
                 <input
                   type="number"
-                  value={editingContract.dailyAmount}
-                  onChange={(e) => setEditingContract({...editingContract, dailyAmount: e.target.value})}
+                  value={editingContract._dailyAmount ?? get(editingContract,'daily_amount','dailyAmount','')}
+                  onChange={(e) => setEditingContract({ ...editingContract, _dailyAmount: e.target.value })}
                   className="w-full px-4 py-2 border rounded-lg"
                   required
                 />
@@ -416,24 +540,20 @@ const Contracts = ({ contracts, setContracts, drivers, vehicles, currentUser, ha
               <div className="mb-4">
                 <label className="block text-sm font-medium mb-2">Jour de repos</label>
                 <select
-                  value={editingContract.restDay}
-                  onChange={(e) => setEditingContract({...editingContract, restDay: e.target.value})}
+                  value={editingContract._restDay ?? get(editingContract,'rest_day','restDay','Lundi')}
+                  onChange={(e) => setEditingContract({ ...editingContract, _restDay: e.target.value })}
                   className="w-full px-4 py-2 border rounded-lg"
                   required
                 >
-                  <option value="Lundi">Lundi</option>
-                  <option value="Mardi">Mardi</option>
-                  <option value="Mercredi">Mercredi</option>
-                  <option value="Jeudi">Jeudi</option>
-                  <option value="Vendredi">Vendredi</option>
-                  <option value="Samedi">Samedi</option>
-                  <option value="Dimanche">Dimanche</option>
+                  {['Lundi','Mardi','Mercredi','Jeudi','Vendredi','Samedi','Dimanche'].map(d => (
+                    <option key={d} value={d}>{d}</option>
+                  ))}
                 </select>
               </div>
 
               <div className="flex gap-2">
-                <button type="submit" className="flex-1 bg-orange-600 text-white py-2 rounded-lg">
-                  Modifier
+                <button disabled={isSubmitting} type="submit" className="flex-1 bg-orange-600 text-white py-2 rounded-lg disabled:opacity-60">
+                  {isSubmitting ? 'Modification...' : 'Modifier'}
                 </button>
                 <button
                   type="button"
@@ -453,62 +573,62 @@ const Contracts = ({ contracts, setContracts, drivers, vehicles, currentUser, ha
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
           <div className="bg-white rounded-xl p-8 max-w-2xl w-full max-h-[90vh] overflow-y-auto">
             <h2 className="text-2xl font-bold mb-6">📋 Détails du contrat</h2>
-            
+
             <div className="space-y-4">
               <div className="grid grid-cols-2 gap-4">
                 <div className="p-4 bg-blue-50 rounded">
                   <p className="text-sm text-blue-700">Chauffeur</p>
-                  <p className="font-bold text-lg">{selectedContract.driverName}</p>
+                  <p className="font-bold text-lg">{selectedContract._driverName}</p>
                 </div>
                 <div className="p-4 bg-green-50 rounded">
                   <p className="text-sm text-green-700">Véhicule</p>
-                  <p className="font-bold text-lg">{selectedContract.vehicleId}</p>
+                  <p className="font-bold text-lg">{selectedContract._vehicleId}</p>
                 </div>
               </div>
 
               <div className="p-4 bg-purple-50 rounded border border-purple-200">
                 <p className="text-sm text-purple-700 mb-1">Type de contrat</p>
                 <span className={`px-3 py-1 rounded-full font-bold ${
-                  selectedContract.type === 'LAO' 
-                    ? 'bg-blue-200 text-blue-800' 
+                  selectedContract._type === 'LAO'
+                    ? 'bg-blue-200 text-blue-800'
                     : 'bg-green-200 text-green-800'
                 }`}>
-                  {selectedContract.type}
+                  {selectedContract._type}
                 </span>
               </div>
 
               <div className="grid grid-cols-2 gap-4">
                 <div className="p-4 bg-gray-50 rounded">
                   <p className="text-sm text-gray-600">Début</p>
-                  <p className="font-bold">{new Date(selectedContract.startDate).toLocaleDateString('fr-FR')}</p>
+                  <p className="font-bold">{selectedContract._startDate ? new Date(selectedContract._startDate).toLocaleDateString('fr-FR') : '—'}</p>
                 </div>
                 <div className="p-4 bg-gray-50 rounded">
                   <p className="text-sm text-gray-600">Fin</p>
-                  <p className="font-bold">{new Date(selectedContract.endDate).toLocaleDateString('fr-FR')}</p>
+                  <p className="font-bold">{selectedContract._endDate ? new Date(selectedContract._endDate).toLocaleDateString('fr-FR') : '—'}</p>
                 </div>
               </div>
 
               <div className="p-4 bg-yellow-50 rounded border border-yellow-200">
                 <p className="text-sm text-yellow-700">Montant journalier</p>
                 <p className="text-2xl font-bold text-yellow-900">
-                  {selectedContract.dailyAmount.toLocaleString()} FCFA
+                  {(Number(selectedContract._dailyAmount) || 0).toLocaleString()} FCFA
                 </p>
               </div>
 
               <div className="grid grid-cols-2 gap-4">
                 <div className="p-4 bg-gray-50 rounded">
                   <p className="text-sm text-gray-600">Caution versée</p>
-                  <p className="font-bold">{selectedContract.deposit.toLocaleString()} FCFA</p>
+                  <p className="font-bold">{(Number(selectedContract._deposit) || 0).toLocaleString()} FCFA</p>
                 </div>
                 <div className="p-4 bg-gray-50 rounded">
                   <p className="text-sm text-gray-600">Montant total</p>
-                  <p className="font-bold">{selectedContract.totalAmount.toLocaleString()} FCFA</p>
+                  <p className="font-bold">{(Number(selectedContract._totalAmount) || 0).toLocaleString()} FCFA</p>
                 </div>
               </div>
 
               <div className="p-4 bg-blue-50 rounded border border-blue-200">
                 <p className="text-sm text-blue-700">Jour de repos</p>
-                <p className="font-bold text-blue-900">{selectedContract.restDay}</p>
+                <p className="font-bold text-blue-900">{selectedContract._restDay}</p>
               </div>
             </div>
 
@@ -525,36 +645,34 @@ const Contracts = ({ contracts, setContracts, drivers, vehicles, currentUser, ha
       {/* Liste des contrats */}
       <div className="grid grid-cols-1 gap-6">
         {activeContracts.map(contract => {
-          const daysRemaining = calculateDaysRemaining(contract.endDate);
-          const progress = calculateProgress(contract.startDate, contract.endDate);
+          const daysRemaining = calculateDaysRemaining(contract._endDate);
+          const progress = calculateProgress(contract._startDate, contract._endDate);
           const isExpiringSoon = daysRemaining <= 30 && daysRemaining > 0;
           const isExpired = daysRemaining <= 0;
 
           return (
-            <div 
+            <div
               key={contract.id}
               className={`bg-white rounded-xl shadow-lg border-l-4 ${
-                contract.type === 'LAO' ? 'border-blue-500' : 'border-green-500'
+                contract._type === 'LAO' ? 'border-blue-500' : 'border-green-500'
               }`}
             >
               <div className={`p-4 ${
-                contract.type === 'LAO' ? 'bg-blue-50' : 'bg-green-50'
+                contract._type === 'LAO' ? 'bg-blue-50' : 'bg-green-50'
               }`}>
                 <div className="flex justify-between items-start">
                   <div className="flex-1">
                     <div className="flex items-center gap-3 mb-2">
-                      <h3 className="font-bold text-xl">{contract.driverName}</h3>
+                      <h3 className="font-bold text-xl">{contract._driverName}</h3>
                       <span className={`px-3 py-1 rounded-full text-xs font-bold ${
-                        contract.type === 'LAO' 
-                          ? 'bg-blue-200 text-blue-800' 
+                        contract._type === 'LAO'
+                          ? 'bg-blue-200 text-blue-800'
                           : 'bg-green-200 text-green-800'
                       }`}>
-                        {contract.type}
+                        {contract._type}
                       </span>
                     </div>
-                    <p className="text-sm text-gray-600">
-                      🚗 {contract.vehicleId}
-                    </p>
+                    <p className="text-sm text-gray-600">🚗 {contract._vehicleId}</p>
                   </div>
                   <div className="flex gap-2">
                     <button
@@ -566,12 +684,14 @@ const Contracts = ({ contracts, setContracts, drivers, vehicles, currentUser, ha
                     <button
                       onClick={() => setEditingContract(contract)}
                       className="text-orange-600 hover:text-orange-800"
+                      title="Modifier"
                     >
                       <Edit size={18} />
                     </button>
                     <button
                       onClick={() => handleDeleteContract(contract.id)}
                       className="text-red-600 hover:text-red-800"
+                      title="Supprimer"
                     >
                       <Trash2 size={18} />
                     </button>
@@ -583,30 +703,25 @@ const Contracts = ({ contracts, setContracts, drivers, vehicles, currentUser, ha
                 <div className="grid grid-cols-3 gap-4 mb-4">
                   <div>
                     <p className="text-xs text-gray-600">Montant/jour</p>
-                    <p className="font-bold text-lg">
-                      {contract.dailyAmount.toLocaleString()} FCFA
-                    </p>
+                    <p className="font-bold text-lg">{(Number(contract._dailyAmount) || 0).toLocaleString()} FCFA</p>
                   </div>
                   <div>
                     <p className="text-xs text-gray-600">Caution</p>
-                    <p className="font-bold text-lg">
-                      {contract.deposit.toLocaleString()} FCFA
-                    </p>
+                    <p className="font-bold text-lg">{(Number(contract._deposit) || 0).toLocaleString()} FCFA</p>
                   </div>
                   <div>
                     <p className="text-xs text-gray-600">Jour de repos</p>
                     <p className="font-bold text-lg flex items-center gap-1">
                       <Calendar size={16} />
-                      {contract.restDay}
+                      {contract._restDay}
                     </p>
                   </div>
                 </div>
 
-                {/* Période */}
                 <div className="mb-4">
                   <div className="flex justify-between text-xs text-gray-600 mb-1">
-                    <span>{new Date(contract.startDate).toLocaleDateString('fr-FR')}</span>
-                    <span>{new Date(contract.endDate).toLocaleDateString('fr-FR')}</span>
+                    <span>{contract._startDate ? new Date(contract._startDate).toLocaleDateString('fr-FR') : '—'}</span>
+                    <span>{contract._endDate ? new Date(contract._endDate).toLocaleDateString('fr-FR') : '—'}</span>
                   </div>
                   <div className="w-full bg-gray-200 rounded-full h-2">
                     <div
@@ -619,21 +734,18 @@ const Contracts = ({ contracts, setContracts, drivers, vehicles, currentUser, ha
                   <p className={`text-xs mt-1 ${
                     isExpired ? 'text-red-600' : isExpiringSoon ? 'text-yellow-700' : 'text-green-700'
                   }`}>
-                    {isExpired 
-                      ? `⚠️ Expiré depuis ${Math.abs(daysRemaining)} jour(s)` 
-                      : isExpiringSoon 
+                    {isExpired
+                      ? `⚠️ Expiré depuis ${Math.abs(daysRemaining)} jour(s)`
+                      : isExpiringSoon
                       ? `⏰ Expire dans ${daysRemaining} jour(s)`
                       : `✅ ${daysRemaining} jour(s) restant(s)`}
                   </p>
                 </div>
 
-                {/* Total */}
                 <div className="p-3 bg-gray-50 rounded">
                   <div className="flex justify-between items-center">
                     <span className="text-sm text-gray-600">Montant total du contrat</span>
-                    <span className="font-bold text-lg">
-                      {contract.totalAmount.toLocaleString()} FCFA
-                    </span>
+                    <span className="font-bold text-lg">{(Number(contract._totalAmount) || 0).toLocaleString()} FCFA</span>
                   </div>
                 </div>
               </div>
