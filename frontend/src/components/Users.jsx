@@ -1,4 +1,4 @@
-// Users.jsx - Gestion des utilisateurs (Admin uniquement) - AVEC SUPABASE (INSERT/DELETE)
+// Users.jsx - Gestion des utilisateurs (Admin uniquement) - AVEC SUPABASE (INSERT/DELETE) - FIX colonnes
 import React, { useState } from 'react';
 import { Plus, Trash2 } from 'lucide-react';
 import { supabase } from '../lib/supabaseClient';
@@ -24,6 +24,8 @@ const Users = ({ allUsers, setAllUsers, currentUser }) => {
       const avatars = ['👨🏿‍💼', '👩🏿‍💼', '👨🏿', '👩🏿', '👨🏿‍🔧', '👩🏿‍🔧'];
       const randomAvatar = avatars[Math.floor(Math.random() * avatars.length)];
 
+      // ⚠️ Ta table users (capture) n'a PAS les colonnes createdAt / createdBy
+      // Donc on n'envoie que des champs existants : username, password, name, email, phone, role, avatar, permissions, must_change_password
       const payload = {
         username: (newUser.username || '').trim(),
         password: (newUser.password || '').trim(),
@@ -35,8 +37,6 @@ const Users = ({ allUsers, setAllUsers, currentUser }) => {
         // jsonb array
         permissions: ['drivers', 'contracts', 'payments', 'vehicles', 'maintenance', 'alerts'],
         must_change_password: false,
-        createdBy: currentUser?.id ?? null,
-        createdAt: new Date().toISOString().split('T')[0],
       };
 
       const { data, error } = await supabase
@@ -210,9 +210,6 @@ const Users = ({ allUsers, setAllUsers, currentUser }) => {
             <div className="mt-4 pt-4 border-t border-gray-200 text-sm">
               <p className="text-gray-600">📧 {user.email}</p>
               <p className="text-gray-600">📱 {user.phone}</p>
-              {user.createdAt && (
-                <p className="text-xs text-gray-500 mt-2">Créé le {user.createdAt}</p>
-              )}
             </div>
           </div>
         ))}
