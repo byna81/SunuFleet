@@ -1,8 +1,8 @@
 // Payments.jsx - AVEC SUPABASE (CRUD)
 // ✅ Insert + Update en base Supabase
+// ✅ Fix NOT NULL : driver_name + payment_type
 // ✅ Historique (modifications) stocké en jsonb si la colonne existe
 // ✅ Fallback automatique si la table n'a pas certaines colonnes (évite erreurs "schema cache")
-// ✅ FIX: driver_name (NOT NULL en DB) renseigné à l'insert
 
 import React, { useMemo, useState } from 'react';
 import { Plus, History, Edit } from 'lucide-react';
@@ -59,48 +59,50 @@ const Payments = ({ payments, setPayments, currentUser, drivers, contracts }) =>
 
   const sortPayments = (arr) => {
     return [...(arr || [])].sort((a, b) => {
-      const da = new Date(`${a.date || ''}T${(a.time || '00:00').slice(0,5)}:00`);
-      const db = new Date(`${b.date || ''}T${(b.time || '00:00').slice(0,5)}:00`);
+      const da = new Date(`${a.date || ''}T${(a.time || '00:00').slice(0, 5)}:00`);
+      const db = new Date(`${b.date || ''}T${(b.time || '00:00').slice(0, 5)}:00`);
       return db - da;
     });
   };
 
-  // map driver -> contrat (snake_case OU camelCase)
+  // Map driverId -> contract (snake_case et camelCase)
   const contractByDriver = useMemo(() => {
     const map = new Map();
-    (contracts || []).forEach(c => {
+    (contracts || []).forEach((c) => {
       if (c?.driver_id != null) map.set(Number(c.driver_id), c);
       if (c?.driverId != null) map.set(Number(c.driverId), c);
     });
     return map;
   }, [contracts]);
 
+  const isContractActive = (c) => {
+    const s = (c?.status || '').toLowerCase();
+    // selon tes écrans: contracts = 'active' (admin) ou null (anciennes données) ou 'pending'
+    return s === '' || s === 'active' || s === 'validated' || s === 'validé';
+  };
+
   const handleAddPayment = async (e) => {
     e.preventDefault();
     if (isSubmitting) return;
 
     const driverId = Number(selectedPaymentDriver);
-    const driver = (drivers || []).find(d => Number(d.id) === driverId);
-
-    // IMPORTANT: driver_name est NOT NULL en DB -> on bloque si pas de driver
-    if (!driver || !driver.name) {
-      alert('Chauffeur invalide (driver_name manquant).');
-      return;
-    }
+    const driver = (drivers || []).find((d) => Number(d.id) === driverId);
 
     const contract = contractByDriver.get(driverId);
-    if (!contract) {
+
+    if (!contract || !isContractActive(contract)) {
       alert('Aucun contrat actif trouvé');
       return;
     }
 
     const paymentAmount = parseFloat(newPayment.amount);
+    const contractAmount = Number(contract.daily_amount ?? contract.dailyAmount ?? 0);
+
     if (!Number.isFinite(paymentAmount)) {
       alert('Montant invalide');
       return;
     }
 
-    const contractAmount = Number(contract.daily_amount ?? contract.dailyAmount ?? 0);
     if (contractAmount && paymentAmount !== contractAmount) {
       const confirmed = window.confirm(
         `⚠️ ATTENTION!\n\nMontant saisi: ${paymentAmount.toLocaleString()} FCFA\nMontant contrat ${contract.type}: ${contractAmount.toLocaleString()} FCFA\n\nVoulez-vous continuer?`
@@ -110,11 +112,18 @@ const Payments = ({ payments, setPayments, currentUser, drivers, contracts }) =>
 
     setIsSubmitting(true);
     try {
-      // payload snake_case (aligné DB)
+      // ✅ IMPORTANT: ta table payments a des NOT NULL (driver_name, payment_type)
       const payload = {
         driver_id: driverId,
-        driver_name: driver.name,           // ✅ FIX NOT NULL
+        driver_name: driver?.name || '',              // ✅ NOT NULL
         contract_id: Number(contract.id),
+
+        // selon ton schéma: NOT NULL payment_type
+        payment_type: contract?.type || 'N/A',        // ✅ NOT NULL
+
+        // utile si ta table payments a aussi vehicle_id (souvent le cas) -> fallback si colonne n'existe pas
+        vehicle_id: contract.vehicle_id ?? contract.vehicleId ?? null,
+
         date: newPayment.date,
         time: newPayment.time,
         amount: paymentAmount,
@@ -131,14 +140,14 @@ const Payments = ({ payments, setPayments, currentUser, drivers, contracts }) =>
       const { data, error } = await supabaseInsertWithFallback('payments', payload);
       if (error) {
         console.error('Insert payment error:', error);
-        alert('❌ Erreur enregistrement versement: ' + (error.message || JSON.stringify(error)));
+        alert('❌ Erreur enregistrement versement: ' + error.message);
         return;
       }
 
       setPayments(sortPayments([data, ...(payments || [])]));
 
       alert(
-        `✅ Paiement enregistré!\n\nChauffeur: ${driver.name}\nMontant: ${paymentAmount.toLocaleString()} FCFA\nType: ${contract.type}`
+        `✅ Paiement enregistré!\n\nChauffeur: ${driver?.name || ''}\nMontant: ${paymentAmount.toLocaleString()} FCFA\nType: ${contract.type}`
       );
 
       setShowAddPayment(false);
@@ -165,7 +174,7 @@ const Payments = ({ payments, setPayments, currentUser, drivers, contracts }) =>
     }
 
     const paymentId = Number(editingPayment.id);
-    const oldPayment = (payments || []).find(p => Number(p.id) === paymentId);
+    const oldPayment = (payments || []).find((p) => Number(p.id) === paymentId);
 
     setIsSubmitting(true);
     try {
@@ -214,14 +223,14 @@ const Payments = ({ payments, setPayments, currentUser, drivers, contracts }) =>
       const { data, error } = await supabaseUpdateWithFallback('payments', paymentId, payload);
       if (error) {
         console.error('Update payment error:', error);
-        alert('❌ Erreur modification versement: ' + (error.message || JSON.stringify(error)));
+        alert('❌ Erreur modification versement: ' + error.message);
         return;
       }
 
-      setPayments(sortPayments((payments || []).map(p => (Number(p.id) === Number(data.id) ? data : p))));
+      setPayments(sortPayments((payments || []).map((p) => (Number(p.id) === Number(data.id) ? data : p))));
 
       const driverId = Number(data.driver_id ?? data.driverId);
-      const driver = (drivers || []).find(d => Number(d.id) === driverId);
+      const driver = (drivers || []).find((d) => Number(d.id) === driverId);
 
       alert(
         `✅ Versement modifié!\nChauffeur: ${driver?.name || ''}\nNouveau montant: ${Number(data.amount).toLocaleString()} FCFA`
@@ -235,22 +244,20 @@ const Payments = ({ payments, setPayments, currentUser, drivers, contracts }) =>
 
   // --- UI helpers (compat snake/camel) ---
   const getDriverName = (payment) => {
-    const dn = payment.driver_name ?? payment.driverName;
-    if (dn) return dn;
-    const driverId = Number(payment.driver_id ?? payment.driverId);
-    return (drivers || []).find(d => Number(d.id) === driverId)?.name || '';
+    return (
+      payment.driver_name ||
+      (drivers || []).find((d) => Number(d.id) === Number(payment.driver_id ?? payment.driverId))?.name ||
+      ''
+    );
   };
 
-  const getContractType = (payment) => {
-    const contractId = Number(payment.contract_id ?? payment.contractId);
-    const c = (contracts || []).find(x => Number(x.id) === contractId);
-    return c?.type || 'N/A';
+  const getType = (payment) => {
+    return payment.payment_type || payment.type || 'N/A';
   };
 
-  const getModsCount = (payment) => {
-    const mods = payment.modifications;
-    return Array.isArray(mods) ? mods.length : 0;
-  };
+  const getRecordedBy = (payment) => payment.recorded_by ?? payment.recordedBy ?? '';
+
+  const getModsCount = (payment) => (Array.isArray(payment.modifications) ? payment.modifications.length : 0);
 
   return (
     <div>
@@ -279,7 +286,7 @@ const Payments = ({ payments, setPayments, currentUser, drivers, contracts }) =>
                     const driverId = Number(e.target.value);
                     setSelectedPaymentDriver(driverId);
                     const contract = contractByDriver.get(driverId);
-                    if (contract) {
+                    if (contract && isContractActive(contract)) {
                       const amt = contract.daily_amount ?? contract.dailyAmount ?? '';
                       setNewPayment({ ...newPayment, amount: amt });
                     }
@@ -288,8 +295,10 @@ const Payments = ({ payments, setPayments, currentUser, drivers, contracts }) =>
                   required
                 >
                   <option value="">Sélectionner</option>
-                  {(drivers || []).map(d => (
-                    <option key={d.id} value={d.id}>{d.name}</option>
+                  {(drivers || []).map((d) => (
+                    <option key={d.id} value={d.id}>
+                      {d.name}
+                    </option>
                   ))}
                 </select>
               </div>
@@ -297,11 +306,16 @@ const Payments = ({ payments, setPayments, currentUser, drivers, contracts }) =>
               {selectedPaymentDriver && (
                 <div className="mb-4 p-3 bg-blue-50 border border-blue-200 rounded">
                   <p className="text-sm text-blue-900">
-                    <strong>Type:</strong> {contractByDriver.get(Number(selectedPaymentDriver))?.type}
+                    <strong>Type:</strong> {contractByDriver.get(Number(selectedPaymentDriver))?.type || '—'}
                   </p>
                   <p className="text-sm text-blue-900">
                     <strong>Montant:</strong>{' '}
-                    {Number(contractByDriver.get(Number(selectedPaymentDriver))?.daily_amount ?? contractByDriver.get(Number(selectedPaymentDriver))?.dailyAmount ?? 0).toLocaleString()} FCFA
+                    {Number(
+                      contractByDriver.get(Number(selectedPaymentDriver))?.daily_amount ??
+                        contractByDriver.get(Number(selectedPaymentDriver))?.dailyAmount ??
+                        0
+                    ).toLocaleString()}{' '}
+                    FCFA
                   </p>
                 </div>
               )}
@@ -316,6 +330,7 @@ const Payments = ({ payments, setPayments, currentUser, drivers, contracts }) =>
                   required
                 />
               </div>
+
               <div className="mb-4">
                 <label className="block text-sm font-medium mb-2">Date</label>
                 <input
@@ -326,6 +341,7 @@ const Payments = ({ payments, setPayments, currentUser, drivers, contracts }) =>
                   required
                 />
               </div>
+
               <div className="mb-4">
                 <label className="block text-sm font-medium mb-2">Heure</label>
                 <input
@@ -456,15 +472,16 @@ const Payments = ({ payments, setPayments, currentUser, drivers, contracts }) =>
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-200">
-            {(payments || []).map(payment => {
-              const type = getContractType(payment);
-              const recordedBy = payment.recorded_by ?? payment.recordedBy ?? '';
+            {(payments || []).map((payment) => {
+              const type = getType(payment);
               const amount = Number(payment.amount ?? 0);
 
               return (
                 <tr key={payment.id}>
                   <td className="px-6 py-4">{getDriverName(payment)}</td>
-                  <td className="px-6 py-4">{payment.date} à {payment.time}</td>
+                  <td className="px-6 py-4">
+                    {payment.date} à {payment.time}
+                  </td>
                   <td className="px-6 py-4">
                     <span
                       className={`px-3 py-1 rounded-full text-xs font-bold ${
@@ -475,14 +492,11 @@ const Payments = ({ payments, setPayments, currentUser, drivers, contracts }) =>
                     </span>
                   </td>
                   <td className="px-6 py-4 font-bold">{amount.toLocaleString()} FCFA</td>
-                  <td className="px-6 py-4 text-sm text-gray-600">{recordedBy}</td>
+                  <td className="px-6 py-4 text-sm text-gray-600">{getRecordedBy(payment)}</td>
                   <td className="px-6 py-4">
                     <div className="flex gap-2">
                       <button
-                        onClick={() => setEditingPayment({
-                          ...payment,
-                          modificationReason: ''
-                        })}
+                        onClick={() => setEditingPayment({ ...payment, modificationReason: '' })}
                         className="text-orange-600 hover:text-orange-800"
                         title="Modifier"
                       >
@@ -511,8 +525,17 @@ const Payments = ({ payments, setPayments, currentUser, drivers, contracts }) =>
             <h2 className="text-2xl font-bold mb-4">📜 Historique</h2>
 
             <div className="mb-6 p-4 bg-gray-50 rounded">
-              <p><strong>Créé par:</strong> {showPaymentHistory.recorded_by ?? showPaymentHistory.recordedBy ?? ''}</p>
-              <p><strong>Créé le:</strong> {showPaymentHistory.recorded_at ? new Date(showPaymentHistory.recorded_at).toLocaleString('fr-FR') : (showPaymentHistory.recordedAt ? new Date(showPaymentHistory.recordedAt).toLocaleString('fr-FR') : '—')}</p>
+              <p>
+                <strong>Créé par:</strong> {showPaymentHistory.recorded_by ?? showPaymentHistory.recordedBy ?? ''}
+              </p>
+              <p>
+                <strong>Créé le:</strong>{' '}
+                {showPaymentHistory.recorded_at
+                  ? new Date(showPaymentHistory.recorded_at).toLocaleString('fr-FR')
+                  : showPaymentHistory.recordedAt
+                  ? new Date(showPaymentHistory.recordedAt).toLocaleString('fr-FR')
+                  : '—'}
+              </p>
             </div>
 
             {Array.isArray(showPaymentHistory.modifications) && showPaymentHistory.modifications.length > 0 ? (
@@ -527,7 +550,9 @@ const Payments = ({ payments, setPayments, currentUser, drivers, contracts }) =>
                       </span>
                     </div>
 
-                    <p className="text-sm text-gray-700 mb-2"><strong>Par:</strong> {mod.modifiedBy}</p>
+                    <p className="text-sm text-gray-700 mb-2">
+                      <strong>Par:</strong> {mod.modifiedBy}
+                    </p>
 
                     <div className="p-3 bg-white rounded mb-2">
                       <p className="text-sm font-bold mb-1">Motif:</p>
@@ -550,10 +575,14 @@ const Payments = ({ payments, setPayments, currentUser, drivers, contracts }) =>
                           </p>
                         )}
                         {mod.changes.date && (
-                          <p className="text-sm"><strong>Date:</strong> {mod.changes.date.old} → <strong>{mod.changes.date.new}</strong></p>
+                          <p className="text-sm">
+                            <strong>Date:</strong> {mod.changes.date.old} → <strong>{mod.changes.date.new}</strong>
+                          </p>
                         )}
                         {mod.changes.time && (
-                          <p className="text-sm"><strong>Heure:</strong> {mod.changes.time.old} → <strong>{mod.changes.time.new}</strong></p>
+                          <p className="text-sm">
+                            <strong>Heure:</strong> {mod.changes.time.old} → <strong>{mod.changes.time.new}</strong>
+                          </p>
                         )}
                       </div>
                     )}
@@ -564,10 +593,7 @@ const Payments = ({ payments, setPayments, currentUser, drivers, contracts }) =>
               <p className="text-gray-500 text-center py-8">Aucune modification</p>
             )}
 
-            <button
-              onClick={() => setShowPaymentHistory(null)}
-              className="mt-6 w-full bg-gray-300 py-2 rounded-lg"
-            >
+            <button onClick={() => setShowPaymentHistory(null)} className="mt-6 w-full bg-gray-300 py-2 rounded-lg">
               Fermer
             </button>
           </div>
