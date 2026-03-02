@@ -10,7 +10,7 @@ const Sidebar = ({ currentUser, activeTab, setActiveTab, handleLogout, hasPermis
         <div className="flex items-center gap-2 mb-2">
           <img
             src="/autofleet-logo.png"
-            alt="AutoFleet Logo"
+            alt="SunuFleet Logo"
             className="w-10 h-10 rounded-lg"
             onError={(e) => {
               e.target.style.display = 'none';
