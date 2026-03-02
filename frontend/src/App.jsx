@@ -141,7 +141,7 @@ const App = () => {
       <div className="min-h-screen bg-gray-100 flex items-center justify-center">
         <div className="text-center">
           <div className="text-6xl mb-4">🚗</div>
-          <h2 className="text-2xl font-bold mb-2">AutoFleet</h2>
+          <h2 className="text-2xl font-bold mb-2">SunuFleet</h2>
           <p className="text-gray-600">Chargement des données...</p>
         </div>
       </div>
