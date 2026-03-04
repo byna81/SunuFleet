@@ -19,7 +19,7 @@ const Sidebar = ({ currentUser, activeTab, setActiveTab, handleLogout, hasPermis
           />
           <span className="text-4xl" style={{ display: 'none' }}>🚗</span>
           <h1 className="text-xl font-bold">
-            <span className="text-red-200">Auto</span><span className="text-white">Fleet</span>
+            <span className="text-red-200">Sunu</span><span className="text-white">Fleet</span>
           </h1>
         </div>
         <p className="text-blue-200 text-xs italic">La gestion intelligente des chauffeurs</p>
