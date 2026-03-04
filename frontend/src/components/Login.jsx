@@ -9,7 +9,7 @@ const Login = ({ loginForm, setLoginForm, handleLogin, loginError, onForgotPassw
         <div className="text-center mb-8">
           <div className="text-6xl mb-4">🚗</div>
           <h1 className="text-4xl font-bold mb-2">
-            <span className="text-red-600">Auto</span><span className="text-gray-900">Fleet</span>
+            <span className="text-red-600">Sunu</span><span className="text-gray-900">Fleet</span>
           </h1>
           <p className="text-blue-600 italic font-medium">La gestion intelligente des chauffeurs</p>
           <p className="text-gray-600 text-sm mt-2">🇸🇳 Sénégal</p>
