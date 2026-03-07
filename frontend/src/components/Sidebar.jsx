@@ -7,22 +7,29 @@ const Sidebar = ({ currentUser, activeTab, setActiveTab, handleLogout, hasPermis
     <div className="w-64 bg-gradient-to-b from-red-600 to-red-700 text-white flex flex-col h-screen">
       {/* Header avec logo */}
       <div className="p-4 border-b border-red-500">
-        <div className="flex items-center gap-2 mb-2">
+        <div className="flex items-center gap-3 mb-2">
           <img
             src="/autofleet-logo.png"
             alt="SunuFleet Logo"
-            className="w-10 h-10 rounded-lg"
+            className="w-16 h-16 object-contain bg-white p-1 rounded-lg"
             onError={(e) => {
               e.target.style.display = 'none';
               e.target.nextSibling.style.display = 'block';
             }}
           />
-          <span className="text-4xl" style={{ display: 'none' }}>🚗</span>
-          <h1 className="text-xl font-bold">
-            <span className="text-red-200">Sunu</span><span className="text-white">Fleet</span>
-          </h1>
+          <span className="text-5xl" style={{ display: 'none' }}>🚗</span>
+
+          <div>
+            <h1 className="text-2xl font-bold leading-none">
+              <span className="text-red-200">Sunu</span>
+              <span className="text-white">Fleet</span>
+            </h1>
+          </div>
         </div>
-        <p className="text-blue-200 text-xs italic">La gestion intelligente des chauffeurs</p>
+
+        <p className="text-blue-200 text-xs italic">
+          La gestion intelligente des chauffeurs
+        </p>
       </div>
 
       {/* Profil utilisateur */}
