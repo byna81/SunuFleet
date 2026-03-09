@@ -1,4 +1,4 @@
-// Sidebar.jsx - Version finale SunuFleet
+// Sidebar.jsx - Version complète finale SunuFleet
 import React from 'react';
 import { LogOut } from 'lucide-react';
 
@@ -14,24 +14,26 @@ const Sidebar = ({
     <div className="w-64 bg-gradient-to-b from-red-600 to-red-700 text-white flex flex-col h-screen">
       {/* Header avec logo */}
       <div className="p-4 border-b border-red-500">
-        <div className="flex items-center gap-3 mb-2">
+        <div className="flex items-center gap-3">
           <img
             src="/autofleet-logo.png"
             alt="SunuFleet Logo"
-            className="w-16 h-16 object-contain bg-white p-1 rounded-lg shadow-sm"
+            className="w-14 h-14 object-contain bg-white p-1 rounded-lg"
             onError={(e) => {
               e.target.style.display = 'none';
               e.target.nextSibling.style.display = 'block';
             }}
           />
-          <span className="text-5xl" style={{ display: 'none' }}>🚗</span>
 
-          <div>
-            <h1 className="text-2xl font-bold leading-none">
-              <span className="text-red-200">Sunu</span>
-              <span className="text-white">Fleet</span>
+          <span className="text-4xl hidden">🚗</span>
+
+          <div className="leading-tight">
+            <h1 className="text-2xl font-bold">
+              <span className="text-red-500">Sunu</span>
+              <span className="text-black">Fleet</span>
             </h1>
-            <p className="text-[11px] text-red-100 mt-1 italic leading-tight">
+
+            <p className="text-white text-[11px] italic whitespace-nowrap">
               La gestion intelligente des chauffeurs
             </p>
           </div>
