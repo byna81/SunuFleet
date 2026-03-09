@@ -5,50 +5,40 @@ import { User, Lock } from 'lucide-react';
 const Login = ({ loginForm, setLoginForm, handleLogin, loginError, onForgotPassword }) => {
   return (
     <div className="min-h-screen bg-gradient-to-br from-red-600 to-red-800 flex items-center justify-center p-4">
-      <div className="bg-white rounded-2xl shadow-2xl p-8 max-w-md w-full">
-
-        {/* Logo + titre */}
+      <div className="bg-white rounded-3xl shadow-xl p-8 md:p-10 max-w-md w-full border border-red-100">
+        {/* Header */}
         <div className="text-center mb-8">
           <img
             src="/autofleet-logo.png"
             alt="SunuFleet"
-            className="w-24 h-24 object-contain mx-auto mb-4"
+            className="w-40 md:w-44 mx-auto mb-5 object-contain"
           />
 
-          <h1 className="text-4xl font-bold mb-2">
-            <span className="text-red-600">Sunu</span>
-            <span className="text-gray-900">Fleet</span>
-          </h1>
-
-          <p className="text-blue-600 italic font-medium">
+          <p className="text-blue-600 italic font-medium text-lg">
             La gestion intelligente des chauffeurs
           </p>
 
-          <p className="text-gray-600 text-sm mt-2">🇸🇳 Sénégal</p>
+          <p className="text-gray-600 text-sm mt-1">🇸🇳 Sénégal</p>
         </div>
 
-        {/* Erreur login */}
+        {/* Erreur */}
         {loginError && (
-          <div className="bg-red-50 border border-red-200 text-red-800 p-3 rounded-lg mb-4 text-center">
+          <div className="bg-red-50 border border-red-200 text-red-800 p-3 rounded-xl mb-5 text-center text-sm">
             {loginError}
           </div>
         )}
 
         {/* Formulaire */}
-        <form onSubmit={handleLogin} className="space-y-4">
-
-          {/* Username */}
+        <form onSubmit={handleLogin} className="space-y-5">
           <div>
-            <label className="block text-sm font-medium mb-2">
+            <label className="block text-sm font-semibold mb-2 text-gray-800">
               Nom d'utilisateur
             </label>
-
             <div className="relative">
               <User
                 className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400"
                 size={20}
               />
-
               <input
                 type="text"
                 value={loginForm.username}
@@ -56,24 +46,21 @@ const Login = ({ loginForm, setLoginForm, handleLogin, loginError, onForgotPassw
                   setLoginForm({ ...loginForm, username: e.target.value })
                 }
                 placeholder="Entrez votre nom d'utilisateur"
-                className="w-full pl-10 pr-4 py-3 border rounded-lg focus:ring-2 focus:ring-red-500 focus:border-transparent"
+                className="w-full pl-10 pr-4 py-3 border border-gray-200 rounded-xl focus:ring-2 focus:ring-red-500 focus:border-transparent outline-none transition"
                 required
               />
             </div>
           </div>
 
-          {/* Password */}
           <div>
-            <label className="block text-sm font-medium mb-2">
+            <label className="block text-sm font-semibold mb-2 text-gray-800">
               Mot de passe
             </label>
-
             <div className="relative">
               <Lock
                 className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400"
                 size={20}
               />
-
               <input
                 type="password"
                 value={loginForm.password}
@@ -81,26 +68,24 @@ const Login = ({ loginForm, setLoginForm, handleLogin, loginError, onForgotPassw
                   setLoginForm({ ...loginForm, password: e.target.value })
                 }
                 placeholder="Entrez votre mot de passe"
-                className="w-full pl-10 pr-4 py-3 border rounded-lg focus:ring-2 focus:ring-red-500 focus:border-transparent"
+                className="w-full pl-10 pr-4 py-3 border border-gray-200 rounded-xl focus:ring-2 focus:ring-red-500 focus:border-transparent outline-none transition"
                 required
               />
             </div>
           </div>
 
-          {/* Bouton login */}
           <button
             type="submit"
-            className="w-full bg-red-600 text-white py-3 rounded-lg font-semibold hover:bg-red-700 transition-colors"
+            className="w-full bg-red-600 text-white py-3.5 rounded-xl font-semibold hover:bg-red-700 transition-colors shadow-sm"
           >
             Se connecter
           </button>
 
-          {/* Mot de passe oublié */}
           {onForgotPassword && (
             <button
               type="button"
               onClick={onForgotPassword}
-              className="w-full text-center text-sm text-blue-600 hover:underline mt-4"
+              className="w-full text-center text-sm text-blue-600 hover:underline"
             >
               Mot de passe oublié ?
             </button>
